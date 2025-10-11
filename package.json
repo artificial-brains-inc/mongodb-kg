@@ -1,0 +1,18 @@
+{
+  "name": "MongoDB_artificialbrains_KG",
+  "version": "0.1.0",
+  "description": "Generic knowledge graph SDK for Mongoose models to manage nodes and edges."
+  "main": "src/index.js",
+  "type": "commonjs",
+  "keywords": [
+    "graph",
+    "mongoose",
+    "knowledge graph",
+    "sdk"
+  ],
+  "author": "",
+  "license": "BUSL-1.1",
+  "peerDependencies": {
+    "mongoose": ">=6"
+  }
+}
