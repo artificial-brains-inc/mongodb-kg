@@ -293,5 +293,4 @@ The SDK does not dictate how you should render your graph.  Below is a minimal e
 
 ## License
 
-License: Business Source License 1.1 (BUSL-1.1)
-This project is source-available under BUSL-1.1.
+APACHE 2.0
