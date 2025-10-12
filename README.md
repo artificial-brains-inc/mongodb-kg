@@ -16,7 +16,7 @@ Install the package alongside Mongoose.  The SDK lists `mongoose` as a peer depe
 
 ```sh
 npm install mongoose
-npm install ./MongoDB_artificialbrains_KG
+npm install ./mongodb-kg
 ```
 
 
@@ -30,7 +30,7 @@ Before binding models you must provide the SDK with the Mongoose models it shoul
 
 ```js
 const mongoose = require('mongoose');
-const { kgInit } = require('MongoDB_artificialbrains_KG');
+const { kgInit } = require('mongodb-kg');
 
 const NodesModel = require('./models/nodes');
 const EdgesModel = require('./models/edges');
@@ -50,7 +50,7 @@ If you don’t already have collections defined for your graph you can let the S
 
 ```js
 const mongoose = require('mongoose');
-const { createGraphModels, kgInit } = require('MongoDB_artificialbrains_KG');
+const { createGraphModels, kgInit } = require('mongodb-kg');
 
 // Define enumerations for valid node types and relationships
 const nodeTypes = ['person', 'team', 'organization', 'memory'];
@@ -94,7 +94,7 @@ Use `bindModel()` to tell the SDK how to convert a document into a node and whic
 * `cleanup(doc)` – returns an array of filters used to remove edges and nodes when the document is deleted; optional.
 
 ```js
-const { bindModel, Relationship } = require('MongoDB_artificialbrains_KG');
+const { bindModel, Relationship } = require('mongodb-kg');
 
 bindModel(UserModel, {
   node: (u) => ({
