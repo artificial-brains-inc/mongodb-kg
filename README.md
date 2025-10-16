@@ -137,7 +137,7 @@ bindModel(MflixComment.schema, {
     node: (c) => ({
       id: `user-${c._id}`,
       label: c.name || 'Commenter',
-      type: 'user',
+      type: 'person',
       source_collection: 'comments',
       source_id: c._id,
       comment: c.text
@@ -283,7 +283,7 @@ function getGraphFromGlobals() {
 
 function colorForType(t) {
   switch (t) {
-    case 'user': return '#81C7D4';
+    case 'person': return '#81C7D4';
     case 'movie': return '#F28B82';
     case 'theater': return '#7FA6EE';
     case 'organization': return '#FDD663';
@@ -459,6 +459,4 @@ function render({ nodes, edges }) {
 
 ## License
 
-APACHE 2.0 - 
-want to collab - https://x.com/alexanderawolf
-Support - https://buy.stripe.com/28E28q0TT6bo3jm5qC1RC00
+APACHE 2.0 - want to collab --> https://x.com/alexanderawolf
