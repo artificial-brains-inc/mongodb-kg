@@ -55,7 +55,6 @@ function createGraphModels(opts = {}) {
     id: { type: String, required: true },
     label: { type: String, required: true },
     type: { type: String, required: true, enum: typeEnum },
-    org_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Org', required: true },
     source_collection: { type: String, required: true },
     source_id: { type: mongoose.Schema.Types.ObjectId, required: true },
     properties: nodeExtra,
@@ -69,8 +68,7 @@ function createGraphModels(opts = {}) {
   // Node indexes
   NodeSchema.index({ id: 1 }, { unique: true });
   NodeSchema.index({ type: 1 });
-  NodeSchema.index({ org_id: 1 });
-  NodeSchema.index({ type: 1, org_id: 1 });
+  NodeSchema.index({ type: 1, source_id: 1 });
   NodeSchema.index({ source_collection: 1, source_id: 1 });
   NodeSchema.index({ source_id: 1 });
 
@@ -90,7 +88,6 @@ function createGraphModels(opts = {}) {
     target: { type: String, required: true },
     relationship: { type: String, required: true, enum: relationshipEnum },
     weight: { type: Number, default: 1.0 },
-    org_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Org', required: true },
     properties: edgeExtra,
     metadata: {
       created_at: { type: Date, default: Date.now },
@@ -101,15 +98,12 @@ function createGraphModels(opts = {}) {
 
   // Edge indexes
   EdgeSchema.index({ id: 1 }, { unique: true });
-  EdgeSchema.index({ org_id: 1 });
   EdgeSchema.index({ source: 1 });
   EdgeSchema.index({ target: 1 });
   EdgeSchema.index({ relationship: 1 });
   EdgeSchema.index({ source: 1, target: 1 });
   EdgeSchema.index({ source: 1, relationship: 1 });
   EdgeSchema.index({ target: 1, relationship: 1 });
-  EdgeSchema.index({ org_id: 1, relationship: 1 });
-  EdgeSchema.index({ org_id: 1, source: 1 });
 
   // Apply indexes for custom edge fields
   for (const [field, config] of Object.entries(edgeCustom)) {

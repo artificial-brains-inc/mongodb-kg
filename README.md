@@ -22,57 +22,77 @@ npm install ./mongodb-kg
 
 ## Quick start
 
-This section walks you through a simple setup where a `User` model is mapped to a single `person` node and an edge to its organisation.  The same approach works for teams, memories or any other collection.
+This section walks you through a simple setup where `users` node is mapped via `comments` (edges) to a single `movie` node. The same approach works for any other collection (in the mflix example we create nodes for users, movies, theaters and comments).
 
 ### 1. Initialise the SDK
 
-Before binding models you must provide the SDK with the Mongoose models it should use to store graph data, and if using Vector, to Voyage AI.  These models represent your `nodes` and `edges` (relationships) collections. 
+Before binding models you must provide the SDK with the Mongoose models it should use to store graph data. These models represent your `nodes` and `edges` (relationships) collections. 
 
 ```js
 const mongoose = require('mongoose');
+
+// function to initialize nodes and edges
 const { kgInit } = require('mongodb-kg');
+
 
 const NodesModel = require('./models/nodes');
 const EdgesModel = require('./models/edges');
-const UserGroup = require('./models/user_group');
+
+// 
+const MflixMovie   = require('./models/movies');
+const MflixUser    = require('./models/users');
+const MflixComment = require('./models/comments');
 
 // Pass any additional repositories via `repos` if you need them inside your edge functions
 kgInit({
   nodesModel: NodesModel,
   edgesModel: EdgesModel,
-  repos: { UserGroup }
+  repos: { MflixMovie, MflixUser, MflixComment }
 });
 ```
 
 #### 1a. Create graph models automatically
 
-If you don’t already have collections defined for your graph you can let the SDK create them for you.  The helper `createGraphModels()` builds Mongoose schemas with sensible defaults and indexes.  You can specify additional fields for the `properties` objects and allowed values for `type` and `relationship`.
+If you don’t already have collections defined for your graph you can let the SDK create them for you.  The helper `createGraphModels()` builds Mongoose schemas with sensible defaults and indexes. You can specify additional fields for the `properties` objects and allowed values for `type` and `relationship`. 
+
+By default, the generated schemas automatically create indexes on common fields. Nodes predefine and enforces the following fields:    
+    id: { type: String, required: true },
+    label: { type: String, required: true },
+    type: { type: String, required: true, enum: typeEnum },
+    source_collection: { type: String, required: true },
+    source_id: { type: mongoose.Schema.Types.ObjectId, required: true },
+
+Edges enforces the following:
+    id: { type: String, required: true },
+    source: { type: String, required: true },
+    target: { type: String, required: true },
+
+When initiating nodes and edges, you don't need to add those, but only the additional fields you want, inidicating if index is necessary. 
 
 ```js
 const mongoose = require('mongoose');
 const { createGraphModels, kgInit } = require('mongodb-kg');
 
 // Define enumerations for valid node types and relationships
-const nodeTypes = ['person', 'team', 'organization', 'memory'];
-const relationships = ['works_at', 'member_of', 'memory_of'];
+const nodeTypes = ['user', 'movie', 'comment', 'theater'];
+const relationships = ['commented_on']; // in the mflix example, other potential relationships ['screened_at']
 
 // Build the models with custom fields.  You can mark fields as indexed.
 const { NodeModel, EdgeModel } = createGraphModels({
   node: {
     name: 'NodesKG',
     customFields: {
-      name: { type: String, index: true },
-      email: { type: String, index: true },
-      role: { type: String }
+      title: { type: String, index: true }, // e.g. from the movies collection
+      year: { type: String, index: true }, // idem
+      plot: { type: String }, // idem
+      name: { type: String, index: true }, // from users collection
     },
     typeEnum: nodeTypes
   },
   edge: {
     name: 'EdgesKG',
     customFields: {
-      context: { type: String },
-      role: { type: String },
-      start_date: { type: Date }
+      text: { type: String },
     },
     relationshipEnum: relationships
   },
@@ -83,44 +103,60 @@ const { NodeModel, EdgeModel } = createGraphModels({
 kgInit({ nodesModel: NodeModel, edgesModel: EdgeModel });
 ```
 
-The generated schemas automatically create indexes on common fields (`id`, `type`, `org_id`, etc.) to keep your queries fast.
+
 
 ### 2. Define a mapping for your model
 
 Use `bindModel()` to tell the SDK how to convert a document into a node and which edges should be created.  The config object accepts three functions:
 
-* `node(doc)` – returns a plain object describing the node; must include a unique `id`.
+* `node(doc)` – returns a plain object describing the node; must include a unique `id`. Different from default _id
 * `edges(doc, ctx)` – returns an array of plain objects describing the edges; optional.
 * `cleanup(doc)` – returns an array of filters used to remove edges and nodes when the document is deleted; optional.
 
 ```js
 const { bindModel, Relationship } = require('mongodb-kg');
 
-bindModel(UserModel, {
-  node: (u) => ({
-    id: `user_${u._id}`,
-    label: u.name || 'Unnamed User',
-    type: 'person',
-    org_id: u.org_id,
-    source_collection: 'users',
-    source_id: u._id,
-    properties: {
-      email: u.email,
-      role: u.role
-    }
-  }),
-  edges: (u) => ([{
-    id: `user_${u._id}_works_at_${u.org_id}`,
-    source: `user_${u._id}`,
-    target: `organization_${u.org_id}`,
-    relationship: Relationship.WorksAt,
-    org_id: u.org_id
-  }]),
-  cleanup: (u) => [
-    { source: `user_${u._id}` },
-    { id: `user_${u._id}` }
-  ]
-});
+  // HERE WE DEFINE THE MIDDLEWARE FOR MOVIES (IN THIS CASE, WE ONLY WANT NODES)
+  bindModel(MflixMovie.schema, {
+    node: (m) => ({
+      id: `movie-${m._id}`,
+      label: m.title || 'Untitled Movie',
+      type: 'movie',
+      source_collection: 'movies',
+      source_id: m._id,
+      properties: { year: m.year, imdb_rating: m.imdb?.rating, genres: m.genres }
+    }),
+    cleanup: (m) => [
+      { source: `movie-${m._id}`},
+      { target: `movie-${m._id}`}
+    ]
+  });
+
+// HERE WE DEFINE THE MIDDLEWARE FOR COMMENTS (IN THIS CASE, WANT A NODE FOR COMMENTER AND EDGE CONNECTING COMMENTER WITH THE MOVIE NODE)
+bindModel(MflixComment.schema, {
+    node: (c) => ({
+      id: `user-${c._id}`,
+      label: c.name || 'Commenter',
+      type: 'user',
+      source_collection: 'comments',
+      source_id: c._id,
+      comment: c.text
+      properties: { email: c.email, from_comment: true }
+    }),
+    edges: (c) => {
+      const commenter = `user-${c._id}`;
+      const movie     = `movie-${c.movie_id}`;
+      return [{
+        id: `${commenter}_commented_on_${movie}`,
+        source: commenter,
+        target: movie,
+        relationship: 'commented_on',
+        weight: 1,
+        properties: { date: c.date }
+      }];
+    },
+    cleanup: (c) => [{ source: `user-${c._id}` }]
+  });
 ```
 
 The SDK will automatically attach middleware to your model.  When a user document is created or updated the node and edges will be upserted; when it is removed the corresponding node and edges will be deleted.
@@ -133,8 +169,8 @@ Your graph data lives in the collections backed by `nodesModel` and `edgesModel`
 app.get('/api/graph', async (req, res) => {
   const org = req.user.org_id;
   const [nodes, edges] = await Promise.all([
-    NodesModel.find({ org_id: org }).lean(),
-    EdgesModel.find({ org_id: org }).lean()
+    NodesModel.find({}).lean(),
+    EdgesModel.find({}).lean()
   ]);
   res.json({ nodes, edges });
 });
@@ -210,87 +246,219 @@ Enumerations containing common node types and relationships.  These strings are 
 
 The SDK does not dictate how you should render your graph.  Below is a minimal example of a D3 component that accepts the `{ nodes, edges }` returned by your API (Backend) and draws an interactive force‑directed graph. Make sure to include https://d3js.org/d3.v7.min.js to your scrip.
 
-```html
-<div id="graph" style="height: 800px"></div>
-<script type="module">
-  import * as d3 from 'd3';
+```js
 
-  class GraphVisualizer {
-    constructor(selector, { width = 800, height = 600 } = {}) {
-      this.svg = d3.select(selector)
-        .append('svg')
-        .attr('width', width)
-        .attr('height', height);
-    }
-    render({ nodes, edges }) {
-      const simulation = d3.forceSimulation(nodes)
-        .force('link', d3.forceLink(edges).id(d => d.id).distance(100))
-        .force('charge', d3.forceManyBody().strength(-300))
-        .force('center', d3.forceCenter(400, 300));
-      const link = this.svg.selectAll('.link')
-        .data(edges)
-        .enter()
-        .append('line')
-        .attr('class', 'link')
-        .attr('stroke', '#999')
-        .attr('stroke-opacity', 0.6);
-      const node = this.svg.selectAll('.node')
-        .data(nodes)
-        .enter()
-        .append('g')
-        .attr('class', 'node')
-        .call(d3.drag()
-          .on('start', (event, d) => {
-            if (!event.active) simulation.alphaTarget(0.3).restart();
-            d.fx = d.x;
-            d.fy = d.y;
-          })
-          .on('drag', (event, d) => {
-            d.fx = event.x;
-            d.fy = event.y;
-          })
-          .on('end', (event, d) => {
-            if (!event.active) simulation.alphaTarget(0);
-            d.fx = null;
-            d.fy = null;
-          }));
-      node.append('circle')
-        .attr('r', 5)
-        .attr('fill', d => {
-          switch (d.type) {
-            case 'person': return '#81C7D4';
-            case 'team': return '#7FA6EE';
-            case 'organization': return '#FDD663';
-            case 'memory': return '#F28B82';
-            default: return '#999999';
-          }
-        });
-      node.append('text')
-        .text(d => d.label)
-        .attr('dx', 8)
-        .attr('dy', 4)
-        .style('font-size', '10px');
-      simulation.on('tick', () => {
-        link
-          .attr('x1', d => d.source.x)
-          .attr('y1', d => d.source.y)
-          .attr('x2', d => d.target.x)
-          .attr('y2', d => d.target.y);
-        node
-          .attr('transform', d => `translate(${d.x}, ${d.y})`);
+
+// --- Helpers ---
+const getNodeId = (d) => {
+  // Always return a STRING id for nodes/links
+  if (d && typeof d === 'object') {
+    if (d.id != null)   return String(d.id);
+    if (d._id != null)  return String(d._id);       // ObjectId -> string
+    if (d.source_id != null) return String(d.source_id);
+  }
+  return String(d); // edge endpoints that are already strings
+};
+
+function getGraphFromGlobals() {
+  if (Array.isArray(window.nodes) && Array.isArray(window.edges)) {
+    // Coerce edge endpoints to strings right away (important)
+    const edges = window.edges.map(e => ({
+      ...e,
+      source: getNodeId(e.source),
+      target: getNodeId(e.target),
+    }));
+    return { nodes: window.nodes.map(n => ({ ...n })), edges };
+  }
+  if (window.GRAPH && Array.isArray(window.GRAPH.nodes) && Array.isArray(window.GRAPH.edges)) {
+    const edges = window.GRAPH.edges.map(e => ({
+      ...e,
+      source: getNodeId(e.source),
+      target: getNodeId(e.target),
+    }));
+    return { nodes: window.GRAPH.nodes.map(n => ({ ...n })), edges };
+  }
+  throw new Error('No graph data found. Inject window.nodes and window.edges in the page.');
+}
+
+function colorForType(t) {
+  switch (t) {
+    case 'user': return '#81C7D4';
+    case 'movie': return '#F28B82';
+    case 'theater': return '#7FA6EE';
+    case 'organization': return '#FDD663';
+    default: return '#999999';
+  }
+}
+
+function computeDegrees(nodes, edges) {
+  const idx = new Map(nodes.map(n => [getNodeId(n), n]));
+  nodes.forEach(n => (n._deg = 0));
+  edges.forEach(e => {
+    const s = getNodeId(e.source);
+    const t = getNodeId(e.target);
+    if (idx.has(s)) idx.get(s)._deg++;
+    if (idx.has(t)) idx.get(t)._deg++;
+  });
+}
+
+function countCommentsByMovie(edges) {
+  // Count "commented_on" edges by TARGET node (movie)
+  const counts = new Map();
+  for (const e of edges) {
+    if (e.relationship !== 'commented_on') continue;
+    const tgt = getNodeId(e.target);
+    counts.set(tgt, (counts.get(tgt) || 0) + 1);
+  }
+  return counts;
+}
+
+function filterGraphByMinComments({ nodes, edges }, minComments) {
+  const commentsPerMovie = countCommentsByMovie(edges);
+
+  // Movies that meet the threshold
+  const allowedMovieIds = new Set(
+    [...commentsPerMovie.entries()]
+      .filter(([, c]) => c >= minComments)
+      .map(([id]) => id)
+  );
+
+  // Keep edges that go to those movies (and keep only commented_on, or keep all — your call)
+  const keptEdges = edges.filter(e => {
+    const tgt = getNodeId(e.target);
+    return allowedMovieIds.has(tgt);
+  });
+
+  // Keep the movies and the nodes that are incident to kept edges
+  const keptNodeIds = new Set();
+  for (const e of keptEdges) {
+    keptNodeIds.add(getNodeId(e.source));
+    keptNodeIds.add(getNodeId(e.target));
+  }
+
+  const keptNodes = nodes.filter(n => keptNodeIds.has(getNodeId(n)));
+
+  return { nodes: keptNodes, edges: keptEdges, meta: { commentsPerMovie } };
+}
+
+function render({ nodes, edges }) {
+  // Filter edges to only those whose endpoints exist among nodes
+  const nodeKeySet = new Set(nodes.map(getNodeId));
+  const safeEdges = edges.filter(e => nodeKeySet.has(getNodeId(e.source)) && nodeKeySet.has(getNodeId(e.target)));
+
+  const container = d3.select('#graph');
+  container.selectAll('*').remove();
+
+  const width = container.node().clientWidth || 960;
+  const height = container.node().clientHeight || 640;
+
+  const svg = container.append('svg').attr('width', width).attr('height', height);
+  const g = svg.append('g');
+
+  const zoom = d3.zoom().scaleExtent([0.1, 3]).on('zoom', (event) => g.attr('transform', event.transform));
+  svg.call(zoom);
+
+  const simulation = d3.forceSimulation(nodes)
+    // Use the STRING key for nodes
+    .force('link', d3.forceLink(safeEdges).id(d => getNodeId(d)).distance(90))
+    .force('charge', d3.forceManyBody().strength(-280))
+    .force('center', d3.forceCenter(width / 2, height / 2));
+
+  const link = g.selectAll('.link')
+    .data(safeEdges)
+    .enter().append('line')
+    .attr('class', 'link')
+    .attr('stroke', '#999')
+    .attr('stroke-opacity', 0.6)
+    .attr('stroke-width', d => Math.sqrt(d.weight || 1));
+
+  link.append('title').text(d => {
+    const from = (typeof d.source === 'object' ? (d.source.label || getNodeId(d.source)) : d.source);
+    const to   = (typeof d.target === 'object' ? (d.target.label || getNodeId(d.target)) : d.target);
+    const when = d.properties?.date ? new Date(d.properties.date).toLocaleString() : null;
+    const txt  = d.properties?.text ? String(d.properties.text).replace(/\s+/g, ' ').slice(0, 240) : null;
+    return [ `${from} → ${to}`, d.relationship ? `relation: ${d.relationship}` : null, when ? `on: ${when}` : null, txt ? `“${txt}”` : null ]
+      .filter(Boolean).join('\n');
+  });
+
+  const node = g.selectAll('.node')
+    .data(nodes)
+    .enter().append('g').attr('class', 'node')
+    .call(d3.drag()
+      .on('start', (event, d) => { if (!event.active) simulation.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; })
+      .on('drag', (event, d) => { d.fx = event.x; d.fy = event.y; })
+      .on('end',  (event, d) => { if (!event.active) simulation.alphaTarget(0); d.fx = null; d.fy = null; })
+    );
+
+  node.append('circle')
+    .attr('r', d => Math.min(5 + Math.log((d._deg || 0) + 1) * 3, 22))
+    .attr('fill', d => colorForType(d.type))
+    .append('title')
+    .text(d => `${d.type}: ${d.label ?? d.name ?? getNodeId(d)}`);
+
+  node.append('text')
+    .text(d => d.label ?? d.name ?? getNodeId(d))
+    .attr('dx', 8).attr('dy', 4)
+    .style('font-size', '10px')
+    .style('pointer-events', 'none');
+
+  simulation.on('tick', () => {
+    link
+      .attr('x1', d => d.source.x)
+      .attr('y1', d => d.source.y)
+      .attr('x2', d => d.target.x)
+      .attr('y2', d => d.target.y);
+    node.attr('transform', d => `translate(${d.x},${d.y})`);
+  });
+
+  const counts = document.getElementById('counts');
+  if (counts) counts.textContent = `nodes: ${nodes.length} • edges: ${safeEdges.length}`;
+
+  return {
+    resetView() { svg.transition().duration(250).call(zoom.transform, d3.zoomIdentity); },
+    restart() { simulation.alpha(1).restart(); },
+  };
+}
+
+(function main() {
+  try {
+    const base = getGraphFromGlobals();             // full data from server
+    window.__BASE_GRAPH__ = base;                   // stash for later
+
+    computeDegrees(base.nodes, base.edges);
+    render(base);
+
+    // Reset
+    const resetBtn = document.getElementById('reset');
+    if (resetBtn) {
+      resetBtn.addEventListener('click', () => {
+        const fresh = getGraphFromGlobals();
+        computeDegrees(fresh.nodes, fresh.edges);
+        render(fresh);
       });
     }
+
+    // Apply "min comments" filter
+    const applyBtn = document.getElementById('applyComments');
+    const minInput = document.getElementById('minComments');
+    if (applyBtn && minInput) {
+      applyBtn.addEventListener('click', () => {
+        const min = Math.max(0, parseInt(minInput.value, 10) || 0);
+        const filtered = filterGraphByMinComments(window.__BASE_GRAPH__, min);
+        computeDegrees(filtered.nodes, filtered.edges);
+        render(filtered);
+      });
+    }
+  } catch (e) {
+    console.error(e);
+    const badge = document.getElementById('counts');
+    if (badge) badge.textContent = 'failed to load graph';
   }
-  // Fetch graph data from your API and render it
-  fetch('/api/graph')
-    .then(res => res.json())
-    .then(data => {
-      const viz = new GraphVisualizer('#graph', { width: 800, height: 800 });
-      viz.render(data);
-    });
-</script>
+})();
 ```
 
 ## License
 
-APACHE 2.0
+APACHE 2.0 - 
+want to collab - https://x.com/alexanderawolf
+Support - https://buy.stripe.com/28E28q0TT6bo3jm5qC1RC00

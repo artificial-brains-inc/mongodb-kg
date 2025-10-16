@@ -21,7 +21,7 @@ const NodeType = {
   Group: 'group',
   Assessment: 'assessment',
   Courses: 'courses',
-  MemEmbedding: 'mem_embedding'
+  vector: 'embedding'
 };
 
 const Relationship = {
@@ -32,10 +32,6 @@ const Relationship = {
   ReportsTo: 'reports_to',
   Leads: 'leads',
   WorksOn: 'works_on',
-  Initiated: 'initiated',
-  Completed: 'completed',
-  MemoryOf: 'memory_of',
-  SingleMemOf: 'single_mem_of',
   BelongsTo: 'belongs_to',
   OwnedBy: 'owned_by',
   Member: 'member'
