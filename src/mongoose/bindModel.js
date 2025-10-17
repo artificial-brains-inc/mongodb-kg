@@ -11,7 +11,7 @@ function bindModel(model, config) {
     const node = buildNode(doc);
     const edges = buildEdges ? await buildEdges(doc, getCtx()) : [];
     // NOTE: org_id is optional; kgBulkSync will ignore if unsupported
-    await kgBulkSync({ desiredNodes: [node], desiredEdges: edges, org_id: node.org_id });
+    await kgBulkSync({ desiredNodes: [node], desiredEdges: edges });
   }
 
   async function performCleanup(doc) {
