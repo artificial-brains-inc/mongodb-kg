@@ -61,7 +61,7 @@ kgInit({
 
 ### 1a. Auto-create Graph Models (optional)
 
-You can automatically generate `NodeModel` and `EdgeModel` using `createGraphModels()`. Be aware to index customFields as required to make it efficient. 
+You can automatically generate `NodeModel` and `EdgeModel` using `createGraphModels()`. Be aware to index customFields as required to make it efficient (it will be indexed as properties.field). 
 
 ```js
 const { createGraphModels, kgInit } = require('mongodb-kg');
@@ -116,7 +116,7 @@ bindModel(MflixMovie, {
     type: 'movie',
     source_collection: 'movies',
     source_id: m._id,
-    properties: { year: m.year, imdb_rating: m.imdb?.rating, genres: m.genres }
+    properties: { year: m.year, title: m.title, plot: m.plot }
   }),
   cleanup: (m) => [
     { source: `movie-${m._id}` },
@@ -132,7 +132,7 @@ bindModel(MflixComment, {
     type: 'person',
     source_collection: 'comments',
     source_id: c._id,
-    properties: { email: c.email, from_comment: true }
+    properties: { text: c.text }
   }),
   edges: (c) => {
     const commenter = `user-${c._id}`;
