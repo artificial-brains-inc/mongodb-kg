@@ -162,8 +162,8 @@ function bindModel(modelOrSchema, config = {}) {
   });
 
   schema.post('insertMany', function(docs) {
-    if (!Array.isArray(docs)) return undefined;
-    return docs.reduce(
+    const created = Array.isArray(docs) ? docs : [docs];
+    return created.reduce(
       (p, doc) => p.then(() => syncDoc(doc, 'post:insertMany')),
       Promise.resolve()
     );
