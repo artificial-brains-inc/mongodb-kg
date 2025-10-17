@@ -2,59 +2,63 @@ const { kgBulkSync } = require('../core/bulkSync');
 const { getCtx } = require('../core/init');
 
 /**
- * @param {mongoose.Model|mongoose.Schema} modelOrSchema
- * @param {Object} config
+ * Attach graph synchronisation logic to a Mongoose model.  You
+ * provide mapping functions that describe how a document becomes a
+ * single canonical node and which edges it should spawn.
+ *
+ * @param {mongoose.Model} model - The model to bind
+ * @param {Object} config - Configuration object
+ * @param {Function} config.node - Function that returns the node record
+ * @param {Function} [config.edges] - Function that returns an array of edge records; may be async
+ * @param {Function} [config.cleanup] - Function that returns an array of filters for deletion
  */
-function bindModel(modelOrSchema, config) {
+function bindModel(model, config) {
   if (!config || typeof config.node !== 'function') {
     throw new Error('bindModel() requires a config with a node(doc) function');
   }
 
-  // Accept either a compiled Model or a Schema
-  const schema = (typeof modelOrSchema?.post === 'function' && !modelOrSchema.base)
-    ? modelOrSchema                     // it's a Schema (has .post and no .base)
-    : modelOrSchema?.schema;            // it's a Model -> use its schema
-
-  if (!schema || typeof schema.post !== 'function') {
-    throw new Error('bindModel(): pass a Mongoose Model or Schema');
-  }
-
   const { node: buildNode, edges: buildEdges, cleanup: buildCleanup } = config;
 
+  // When a document is saved or updated, compute the desired node
+  // and edges and synchronise them with the graph.
   async function sync(doc) {
     const node = buildNode(doc);
     const edges = buildEdges ? await buildEdges(doc, getCtx()) : [];
     await kgBulkSync({
       desiredNodes: [node],
       desiredEdges: edges,
-      keepExtra: { edges: true }  // safe default, no pruning
+      org_id: node.org_id
     });
   }
 
+  // When a document is deleted, clean up the node and its edges.
   async function performCleanup(doc) {
     const node = buildNode(doc);
     const filters = buildCleanup ? buildCleanup(doc) : [{ source: node.id }, { id: node.id }];
     const { nodesModel, edgesModel } = getCtx();
+    // Remove edges matching any of the filters
     await edgesModel.deleteMany({ $or: filters });
+    // Remove the node
     await nodesModel.deleteOne({ id: node.id });
   }
 
-  // Attach hooks on the SCHEMA
-  schema.post('save', async function(doc) {
-    try { await sync(doc); } catch (_) {}
+  model.post('save', async function(doc) {
+    await sync(doc);
   });
 
-  schema.post('findOneAndUpdate', async function(doc) {
-    try { if (doc) await sync(doc); } catch (_) {}
+  model.post('findOneAndUpdate', async function(doc) {
+    if (doc) await sync(doc);
   });
 
-  schema.post('findOneAndDelete', async function(doc) {
-    try { if (doc) await performCleanup(doc); } catch (_) {}
+  model.post('findOneAndDelete', async function(doc) {
+    if (doc) await performCleanup(doc);
   });
 
-  schema.post('deleteOne', { document: true, query: false }, async function(doc) {
-    try { if (doc) await performCleanup(doc); } catch (_) {}
+  model.post('deleteOne', { document: true, query: false }, async function(doc) {
+    if (doc) await performCleanup(doc);
   });
 }
 
-module.exports = { bindModel };
+module.exports = {
+  bindModel
+};
