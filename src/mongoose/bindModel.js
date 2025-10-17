@@ -4,10 +4,11 @@ const { getCtx } = require('../core/init');
 const BIND_FLAG = Symbol.for('kg:bindModel:bound');
 
 function bindModel(modelOrSchema, config = {}) {
+  console.log('bindModel called');
   if (!config || typeof config.node !== 'function') {
     throw new Error('bindModel() requires a config with a node(doc) function');
   }
-
+  console.log('called 1');
   const schema = (typeof modelOrSchema?.post === 'function' && typeof modelOrSchema?.add === 'function' && !modelOrSchema.base)
     ? modelOrSchema
     : modelOrSchema?.schema;

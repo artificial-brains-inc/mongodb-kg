@@ -3,13 +3,9 @@
   "version": "0.1.0",
   "description": "Generic knowledge graph SDK for Mongoose models to manage nodes and edges.",
   "main": "src/index.js",
+  "types": "index.d.ts",
   "type": "commonjs",
-  "keywords": [
-    "graph",
-    "mongoose",
-    "knowledge graph",
-    "sdk"
-  ],
+  "keywords": ["graph", "mongoose", "knowledge graph", "sdk"],
   "author": "",
   "license": "Apache-2.0",
   "peerDependencies": {
