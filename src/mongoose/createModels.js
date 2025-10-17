@@ -92,7 +92,6 @@ function createGraphModels(opts = {}) {
     metadata: {
       created_at: { type: Date, default: Date.now },
       updated_at: { type: Date, default: Date.now },
-      source_team_id: { type: mongoose.Schema.Types.ObjectId }
     }
   }, { timestamps: true });
 
