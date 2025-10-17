@@ -10,10 +10,9 @@ const { getCtx } = require('./init');
  * @param {Object} params
  * @param {Array<Object>} [params.desiredNodes] - Nodes to upsert
  * @param {Array<Object>} [params.desiredEdges] - Edges to upsert
- * @param {*} params.org_id - Organisation identifier used for pruning
  * @param {Object} [params.keepExtra] - Set to true to skip pruning
  */
-async function kgBulkSync({ desiredNodes = [], desiredEdges = [], org_id, keepExtra = { nodes: false, edges: false } }) {
+async function kgBulkSync({ desiredNodes = [], desiredEdges = [], keepExtra = { nodes: false, edges: false } }) {
   const { nodesModel, edgesModel } = getCtx();
   if (!nodesModel || !edgesModel) {
     throw new Error('kgInit() must be called before kgBulkSync()');
@@ -47,7 +46,6 @@ async function kgBulkSync({ desiredNodes = [], desiredEdges = [], org_id, keepEx
     pruneOps.push({
       deleteMany: {
         filter: {
-          org_id,
           source: { $in: Array.from(controlledSources) },
           id: { $nin: Array.from(desiredEdgeIds) }
         }
