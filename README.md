@@ -23,7 +23,7 @@ The SDK wires itself into your Mongoose models through middleware so the graph s
 
 ```bash
 npm install mongoose
-npm install ./mongodb-kg
+npm install mongodb-kg
 ```
 
 Mongoose is a peer dependency; bring your own compatible version.
@@ -419,7 +419,7 @@ Future versions focus on the resync flow.
 
 Apache 2.0  
 
-Created by [@rtificialbrains.ai](https://artificialbrains.ai).
+Created by [@artificialbrains.ai](https://artificialbrains.ai).
 Follow us on [@alexanderawolf](https://x.com/alexanderawolf)  
 
 If this SDK helps your project, consider supporting its continued development:  
@@ -441,4 +441,4 @@ While our research and vision looks far ahead, we release along the way (open so
 whenever our progress can strengthen today’s ecosystems and it's transition to neuromorphic-native tech.
 
 Join the ecosystem to access training, early releases, research, and tools shaping neuromorphic technology:
-[@rtificialbrains.ai](https://artificialbrains.ai) 
+[@artificialbrains.ai](https://artificialbrains.ai) 
