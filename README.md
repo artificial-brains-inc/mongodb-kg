@@ -419,11 +419,26 @@ Future versions focus on the resync flow.
 
 Apache 2.0  
 
-Created by [@rtificialbrains.ai](https://artificialbrains.ai).  
+Created by [@rtificialbrains.ai](https://artificialbrains.ai).
+Follow us on [@alexanderawolf](https://x.com/alexanderawolf)  
 
 If this SDK helps your project, consider supporting its continued development:  
-[Support via Stripe](https://buy.stripe.com/28E28q0TT6bo3jm5qC1RC00)  
+[Support via Stripe](https://buy.stripe.com/fZufZi0wL6fG2ef79g7Zu00)  
 
 If you use this SDK in your project, a link back is appreciated.
 
 Pull requests and forks are welcome.
+
+
+---
+
+
+## About Artificial Brains
+
+Artificial Brains is a Research and Innovation Lab accelerating human adoption of neuromorphic technologies.
+
+While our research and vision looks far ahead, we release along the way (open source or subscription-first) 
+whenever our progress can strengthen today’s ecosystems and it's transition to neuromorphic-native tech.
+
+Join the ecosystem to access training, early releases, research, and tools shaping neuromorphic technology:
+[@rtificialbrains.ai](https://artificialbrains.ai)
