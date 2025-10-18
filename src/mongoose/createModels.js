@@ -103,6 +103,8 @@ function createGraphModels(opts = {}) {
   EdgeSchema.index({ source: 1, target: 1 });
   EdgeSchema.index({ source: 1, relationship: 1 });
   EdgeSchema.index({ target: 1, relationship: 1 });
+  EdgeSchema.index({ source: 1, relationship: 1, weight: -1 });
+  EdgeSchema.index({ target: 1, relationship: 1, weight: -1 });
 
   // Apply indexes for custom edge fields
   for (const [field, config] of Object.entries(edgeCustom)) {
