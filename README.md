@@ -195,8 +195,9 @@ await kgBulkSync({
     { model: MflixUser },
     { model: MflixComment },
   ],
-  useBindings: true,
-  batchSize: 2000,
+  useBindings: true,    // must be true for initial build
+  batchSize: 2000,     // how many upserts per bulkWrite batch
+  maxPerModel: 0,      // 0 = all
 });
 ```
 
@@ -390,6 +391,7 @@ Replays all your bindings across existing documents.
 | models      | Array  | []       | Array of `{ model, query?, label? }`. |
 | useBinding  | Boolean| false    | true required for initial build       |
 | batchSize   | Number | 1000     | Number of documents to sync.          |
+| maxPerModel | Number | 0        | Max docs to sync per model            |
 
 
 #### Classic upsert mode (deprecated)

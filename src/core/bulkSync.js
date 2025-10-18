@@ -30,6 +30,8 @@ async function kgBulkSync(opts = {}) {
   if (useBindings && Array.isArray(models) && models.length > 0) {
     let totalNodes = 0;
     let totalEdges = 0;
+    
+    const ctx = getCtx();
 
     for (const { model, query = {}, label = (model && model.modelName) || 'Model' } of models) {
       if (!model?.find) {
