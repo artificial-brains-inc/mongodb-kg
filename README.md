@@ -419,7 +419,7 @@ Future versions focus on the resync flow.
 
 Apache 2.0  
 
-Created by [@alexanderawolf](https://x.com/alexanderawolf).  
+Created by [@rtificialbrains.ai](https://artificialbrains.ai).  
 
 If this SDK helps your project, consider supporting its continued development:  
 [Support via Stripe](https://buy.stripe.com/28E28q0TT6bo3jm5qC1RC00)  
