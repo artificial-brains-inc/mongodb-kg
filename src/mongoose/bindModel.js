@@ -574,7 +574,10 @@ function bindModel(modelOrSchema, config = {}) {
             { $project: { id: '$_id', score: 1, via: 1, _id: 0 } }
           );
 
-          const rows = await edgesModel.aggregate(pipeline, { allowDiskUse: true }).toArray();
+          const rows = await edgesModel
+          .aggregate(pipeline)
+          .option({ allowDiskUse: true })   // or .allowDiskUse(true) in your Mongoose
+          .exec();     
           if (!rows.length) return [];
 
           // hydrate once
