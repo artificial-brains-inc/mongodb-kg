@@ -33,7 +33,7 @@ Mongoose is a peer dependency; bring your own compatible version.
 ## Quick Start
 
 This example uses the **mflix** dataset.
-We create nodes for `movies`, `users`, and `comments`, and edges linking commenters to the movies they comment on.
+We create nodes for `movies` and `users`, and edges linking commenters to the movies via 'comment_on' from the `comments` model.
 
 ### 1. Initialize the SDK
 
@@ -45,10 +45,6 @@ const { kgInit } = require('mongodb-kg');
 
 const NodesModel = require('./models/nodes');
 const EdgesModel = require('./models/edges');
-
-const MflixMovie   = require('./models/movies');
-const MflixUser    = require('./models/users');
-const MflixComment = require('./models/comments');
 
 kgInit({
   nodesModel: NodesModel,
