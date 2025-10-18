@@ -9,9 +9,19 @@ function bindModel(modelOrSchema, config = {}) {
     throw new Error('bindModel() requires a config with a node(doc) function');
   }
   console.log('called 1');
-  const schema = (typeof modelOrSchema?.post === 'function' && typeof modelOrSchema?.add === 'function' && !modelOrSchema.base)
-    ? modelOrSchema
-    : modelOrSchema?.schema;
+  const isSchema =
+    modelOrSchema &&
+    typeof modelOrSchema.post === 'function' &&
+    typeof modelOrSchema.add === 'function' &&
+    !('modelName' in modelOrSchema);
+
+  const schema = isSchema ? modelOrSchema : modelOrSchema?.schema;
+
+  if (!schema || typeof schema.post !== 'function') {
+    throw new Error('bindModel(): pass a Mongoose Model or Schema');
+  }
+
+
 
   if (!schema || typeof schema.post !== 'function') {
     throw new Error('bindModel(): pass a Mongoose Model or Schema');
@@ -22,7 +32,8 @@ function bindModel(modelOrSchema, config = {}) {
   }
   schema[BIND_FLAG] = true;
 
-  const Model = typeof modelOrSchema?.find === 'function' ? modelOrSchema : null;
+    // If a Model was passed, keep it; if a Schema was passed, Model stays null.
+  const Model = modelOrSchema && typeof modelOrSchema.find === 'function' ? modelOrSchema : null;
   const {
     node: buildNode,
     edges: buildEdges,
