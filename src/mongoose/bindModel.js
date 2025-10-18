@@ -5,8 +5,8 @@ const BIND_FLAG = Symbol.for('kg:bindModel:bound');
 
 function bindModel(modelOrSchema, config = {}) {
   console.log('bindModel called');
-  if (!config || typeof config.node !== 'function') {
-    throw new Error('bindModel() requires a config with a node(doc) function');
+  if (!config || (typeof config.node !== 'function' && typeof config.edges !== 'function')) {
+    throw new Error('bindModel() requires at least one of: node(doc) or edges(doc)');
   }
   console.log('called 1');
   const isSchema =
@@ -57,9 +57,11 @@ function bindModel(modelOrSchema, config = {}) {
   const defaultKeepExtra = keepExtra !== undefined ? keepExtra : { edges: true };
 
   async function buildNodeSafe(doc) {
+    if (typeof buildNode !== 'function') return null; // edges-only
     const node = await Promise.resolve(buildNode(doc));
     if (!node || !node.id) {
-      throw new Error('bindModel node(doc) must return an object with an id');
+      const idForLog = doc && doc._id ? String(doc._id) : '(no _id)';
+      throw new Error(`bindModel node(doc) must return an object with an id (model=${schema?.options?.collection || 'unknown'}, _id=${idForLog})`);
     }
     return node;
   }
@@ -72,23 +74,23 @@ function bindModel(modelOrSchema, config = {}) {
   }
 
   async function buildCleanupFilters(doc, node) {
-    if (buildCleanup) {
+    if (typeof buildCleanup === 'function') {
       const filters = await Promise.resolve(buildCleanup(doc, getCtx()));
-      if (Array.isArray(filters) && filters.length > 0) {
-        return filters;
-      }
+      if (Array.isArray(filters) && filters.length > 0) return filters;
     }
-    return [{ source: node.id }, { target: node.id }, { id: node.id }];
+    // Default fallback: only if we actually have a node
+    return node ? [{ source: node.id }, { target: node.id }, { id: node.id }] : [];
   }
 
   async function syncDoc(doc, hookName) {
     if (!doc) return;
     try {
-      const node = await buildNodeSafe(doc);
-      const edges = await buildEdgesSafe(doc);
+      const node  = await buildNodeSafe(doc);          // may be null
+      const edges = await buildEdgesSafe(doc);         // []
       await kgBulkSync({
-        desiredNodes: [node],
+        desiredNodes: node ? [node] : [],
         desiredEdges: edges,
+        // With no node, we can’t “control” a source → never prune by default
         keepExtra: defaultKeepExtra
       });
     } catch (err) {
@@ -99,14 +101,24 @@ function bindModel(modelOrSchema, config = {}) {
   async function cleanupDoc(doc, hookName) {
     if (!doc) return;
     try {
-      const node = await buildNodeSafe(doc);
-      const filters = await buildCleanupFilters(doc, node);
+      const node = await buildNodeSafe(doc);                 // may be null
       const { nodesModel, edgesModel } = getCtx();
       if (!nodesModel || !edgesModel) {
         throw new Error('kgInit() must be called before using bindModel()');
       }
-      await edgesModel.deleteMany({ $or: filters });
-      await nodesModel.deleteOne({ id: node.id });
+
+      const filters = await buildCleanupFilters(doc, node);
+
+      if (filters.length > 0) {
+        await edgesModel.deleteMany({ $or: filters });
+      } else {
+        // Edges-only binding without cleanup: nothing deterministic to delete.
+        // Intentionally do nothing.
+      }
+
+      if (node) {
+        await nodesModel.deleteOne({ id: node.id });
+      }
     } catch (err) {
       reportHookError(err, hookName);
     }
