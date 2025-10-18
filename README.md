@@ -441,4 +441,4 @@ While our research and vision looks far ahead, we release along the way (open so
 whenever our progress can strengthen today’s ecosystems and it's transition to neuromorphic-native tech.
 
 Join the ecosystem to access training, early releases, research, and tools shaping neuromorphic technology:
-[@rtificialbrains.ai](https://artificialbrains.ai)
+[@rtificialbrains.ai](https://artificialbrains.ai) 
