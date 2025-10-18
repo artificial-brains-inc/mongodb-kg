@@ -1,6 +1,6 @@
 {
   "name": "mongodb-kg",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Generic knowledge graph SDK for Mongoose models to manage nodes and edges.",
   "license": "Apache-2.0",
   "type": "commonjs",
