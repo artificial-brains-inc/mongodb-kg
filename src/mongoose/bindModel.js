@@ -433,25 +433,21 @@ function bindModel(modelOrSchema, config = {}) {
 
   // === Generic recommendation helper =========================================
     /**
-     * Generic recommender over the graph.
+     * Generic recommender over the graph (2 hops).
      *
      * @param {string} startId - id of the starting node (e.g., 'movie_...', 'user_...')
      * @param {object} opts
      *   - mode: 'unweighted' | 'weighted' (default 'unweighted')
      *   - limit: number (default 5)
-     *   - includePath: boolean (default false)
-     *   - // Simple expansion mode (ignore metaPath if provided):
-     *   - hops: number of edge traversals (default 2)
+     *   - includePath: boolean (default false; weighted fast path returns 3-node path)
      *   - relationship: string | string[] (edge relationship(s) to use) (optional)
      *   - direction: 'out' | 'in' | 'any' (default 'any')
      *   - targetType: string | string[] (optional node type filter)
      *   - targetFilter: Mongo-ish filter applied to nodesModel (optional)
-     *   - // Weighted options:
-     *   - weightField: string (default 'weight')
-     *   - defaultWeight: number (default 1)
-     *   - // Advanced: explicit meta-path pattern overrides the simple expansion
-     *   - metaPath: Array<{ relationship?: string|string[], direction?: 'out'|'in'|'any', nodeType?: string|string[] }>
-     *   - fanout at 64 nodes per step is default
+     *   - weightField: string (default 'weight')         // weighted only
+     *   - defaultWeight: number (default 1)              // weighted only
+     *   - fanout: number (default 64)  // max neighbors per node per hop
+     *   - preferGraphLookup: boolean (default false) // unweighted only
      */
     if (!schema.statics.kgRecommend) {
       schema.statics.kgRecommend = async function (
@@ -460,59 +456,58 @@ function bindModel(modelOrSchema, config = {}) {
           mode = 'unweighted',
           limit = 5,
           includePath = false,
-
-          // Simple expansion defaults
-          hops = 2,
           relationship,
           direction = 'any',
           targetType,
           targetFilter,
 
-          // Weighted
+          // weighted
           weightField = 'weight',
           defaultWeight = 1,
 
-          // Advanced meta-path
-          metaPath,
-
-          // cap branching factor per node per hop
+          // traversal controls
           fanout = 64,
+          preferGraphLookup = false,
         } = {}
       ) {
         const { edgesModel, nodesModel } = getCtx();
         if (!edgesModel || !nodesModel) throw new Error('kgInit() must be called');
 
-        const toArray = (x) => (Array.isArray(x) ? x : x != null ? [x] : null);
-        const rels = toArray(relationship);
+        const relsArray = Array.isArray(relationship)
+          ? relationship
+          : (relationship ? [relationship] : []);
 
-        // ---------- FAST PATH: weighted, <=2 hops, no metaPath ----------
+        // ---------- Weighted: fast 2-hop pipeline with per-hop sort/limit ----------
         async function fastWeighted2Hop({
-          startId, relationship, direction = 'any',
-          fanout = 64, limit = 5, weightField = 'weight',
-          targetType, includePath = false, nodesModel, edgesModel
+          startId, relsArray, direction, fanout, limit, weightField, defaultWeight,
+          targetType, includePath, nodesModel, edgesModel,
         }) {
           const E = edgesModel.collection.name;
           const N = nodesModel.collection.name;
-          const rels = Array.isArray(relationship) ? relationship : (relationship ? [relationship] : []);
-          const relMatchStage = rels.length ? [{ $match: { relationship: { $in: rels } } }] : [];
+          const relMatch = relsArray.length ? [{ $match: { relationship: { $in: relsArray } } }] : [];
 
-          // hop1: rank & cap
+          const w1 = { $ifNull: [`$${weightField}`, defaultWeight] };
+          const w2 = { $ifNull: [`$${weightField}`, defaultWeight] };
+
+          // hop1
           const hop1Out = [
             { $match: { source: String(startId) } },
-            ...relMatchStage,
-            { $sort: { [weightField]: -1, source: 1 } },
+            ...relMatch,
+            { $addFields: { _w1: w1 } },
+            { $sort: { _w1: -1, source: 1 } },
             { $limit: fanout },
-            { $project: { via: '$target', w1: `$${weightField}`, _id: 0 } }
+            { $project: { _id: 0, via: '$target', w1: '$_w1' } }
           ];
           const hop1In = [
             { $match: { target: String(startId) } },
-            ...relMatchStage,
-            { $sort: { [weightField]: -1, target: 1 } },
+            ...relMatch,
+            { $addFields: { _w1: w1 } },
+            { $sort: { _w1: -1, target: 1 } },
             { $limit: fanout },
-            { $project: { via: '$source', w1: `$${weightField}`, _id: 0 } }
+            { $project: { _id: 0, via: '$source', w1: '$_w1' } }
           ];
 
-          // hop2: from via → candidates, rank & cap
+          // hop2
           const hop2 = (dir) => ([
             {
               $lookup: {
@@ -520,26 +515,26 @@ function bindModel(modelOrSchema, config = {}) {
                 let: { via: '$via' },
                 pipeline: [
                   { $match: { $expr: { $eq: [dir === 'out' ? '$source' : '$target', '$$via'] } } },
-                  ...relMatchStage,
-                  { $sort: { [weightField]: -1 } },
+                  ...relMatch,
+                  { $addFields: { _w2: w2 } },
+                  { $sort: { _w2: -1 } },
                   { $limit: fanout },
-                  { $project: { cand: dir === 'out' ? '$target' : '$source', w2: `$${weightField}`, _id: 0 } }
+                  { $project: { _id: 0, cand: dir === 'out' ? '$target' : '$source', w2: '$_w2' } }
                 ],
                 as: 'two'
               }
             },
             { $unwind: '$two' },
-            { $project: { cand: '$two.cand', via: '$via', score: { $add: ['$w1', '$two.w2'] }, _id: 0 } }
+            { $project: { _id: 0, cand: '$two.cand', via: '$via', score: { $add: ['$w1', '$two.w2'] } } }
           ]);
 
-          // out / in / any
           let base;
           if (direction === 'out') base = [...hop1Out, ...hop2('out')];
           else if (direction === 'in') base = [...hop1In, ...hop2('in')];
           else {
             base = [
               { $facet: { OUT: [...hop1Out, ...hop2('out')], IN: [...hop1In, ...hop2('in')] } },
-              { $project: { all: { $setUnion: ['$OUT', '$IN'] } } },
+              { $project: { all: { $concatArrays: ['$OUT', '$IN'] } } },
               { $unwind: '$all' },
               { $replaceRoot: { newRoot: '$all' } }
             ];
@@ -549,38 +544,38 @@ function bindModel(modelOrSchema, config = {}) {
             ...base,
             { $match: { cand: { $ne: String(startId) } } },
             { $group: { _id: '$cand', score: { $sum: '$score' }, via: { $first: '$via' } } },
-            { $sort: { score: -1 } }
+            { $sort: { score: -1 } },
           ];
 
-          // optional type filter
-          if (targetType) {
+          if (targetType || targetFilter) {
             pipeline.push(
               {
                 $lookup: {
                   from: N,
                   localField: '_id',
                   foreignField: 'id',
-                  pipeline: [{ $project: { id: 1, type: 1, properties: 1, _id: 0 } }],
+                  pipeline: [{ $project: { _id: 0, id: 1, type: 1, properties: 1, label: 1 } }],
                   as: 'node'
                 }
               },
               { $unwind: '$node' },
-              { $match: { 'node.type': Array.isArray(targetType) ? { $in: targetType } : targetType } }
             );
+            if (targetType) {
+              pipeline.push({ $match: { 'node.type': Array.isArray(targetType) ? { $in: targetType } : targetType } });
+            }
+            if (targetFilter && typeof targetFilter === 'object') {
+              // apply a subset of filter on node fields (id/type/properties/label)
+              const tf = {};
+              for (const [k, v] of Object.entries(targetFilter)) tf[`node.${k}`] = v;
+              pipeline.push({ $match: tf });
+            }
           }
 
-          pipeline.push(
-            { $limit: Math.max(1, limit) },
-            { $project: { id: '$_id', score: 1, via: 1, _id: 0 } }
-          );
+          pipeline.push({ $limit: Math.max(1, limit) }, { $project: { _id: 0, id: '$_id', score: 1, via: 1 } });
 
-          const rows = await edgesModel
-          .aggregate(pipeline)
-          .option({ allowDiskUse: true })   // or .allowDiskUse(true) in your Mongoose
-          .exec();     
+          const rows = await edgesModel.aggregate(pipeline).allowDiskUse(true).exec();
           if (!rows.length) return [];
 
-          // hydrate once
           const ids = rows.map(r => r.id);
           const docs = await nodesModel.find(
             { id: { $in: ids } },
@@ -598,163 +593,219 @@ function bindModel(modelOrSchema, config = {}) {
           });
         }
 
-        const canFastPath =
-          mode === 'weighted' &&
-          !metaPath &&
-          (hops == null || hops <= 2);
+        // ---------- Unweighted, capped fanout (default) ----------
+        async function unweightedCapped2Hop({
+          startId, relsArray, direction, fanout, limit, targetType, targetFilter,
+          nodesModel, edgesModel
+        }) {
+          const relFilter = relsArray.length ? { relationship: { $in: relsArray } } : {};
 
-        if (canFastPath) {
+          // helper: top-K neighbors (by count; we just cap, no sort by weight)
+          async function topK(frontier, dir, k) {
+            if (!frontier?.length) return [];
+            if (dir === 'out') {
+              const docs = await edgesModel.aggregate([
+                { $match: { source: { $in: frontier }, ...relFilter } },
+                { $group: { _id: '$source', nbrs: { $push: '$target' } } },
+                { $project: { _id: 0, nbrs: { $slice: ['$nbrs', k] } } },
+              ]).allowDiskUse(true);
+              return docs.flatMap(d => d.nbrs);
+            }
+            if (dir === 'in') {
+              const docs = await edgesModel.aggregate([
+                { $match: { target: { $in: frontier }, ...relFilter } },
+                { $group: { _id: '$target', nbrs: { $push: '$source' } } },
+                { $project: { _id: 0, nbrs: { $slice: ['$nbrs', k] } } },
+              ]).allowDiskUse(true);
+              return docs.flatMap(d => d.nbrs);
+            }
+            // any → split half/half
+            const [o, i] = await Promise.all([
+              topK(frontier, 'out', Math.ceil(k/2)),
+              topK(frontier, 'in',  Math.floor(k/2)),
+            ]);
+            return [...new Set([...o, ...i])];
+          }
+
+          let frontier = [String(startId)];
+          // hop 1
+          frontier = await topK(frontier, direction, fanout);
+          if (!frontier.length) return [];
+          // hop 2
+          frontier = await topK(frontier, direction, fanout);
+          if (!frontier.length) return [];
+
+          const candSet = new Set(frontier.filter(id => id !== String(startId)));
+          let candIds = [...candSet];
+
+          // optional node filtering
+          if (targetType || targetFilter) {
+            const nodeQuery = { id: { $in: candIds } };
+            if (targetType) nodeQuery.type = Array.isArray(targetType) ? { $in: targetType } : targetType;
+            if (targetFilter && typeof targetFilter === 'object') Object.assign(nodeQuery, targetFilter);
+            const docs = await nodesModel.find(nodeQuery, { id: 1 }).lean();
+            const ok = new Set(docs.map(d => d.id));
+            candIds = candIds.filter(id => ok.has(id));
+          }
+
+          if (!candIds.length) return [];
+
+          // hydrate + present
+          const docs = await nodesModel.find(
+            { id: { $in: candIds } },
+            { id: 1, label: 1, type: 1, properties: 1, _id: 0 }
+          ).lean();
+
+          const byId = new Map(docs.map(d => [d.id, d]));
+          const titleOf = (d) => d?.properties?.title ?? d?.properties?.name ?? d?.label ?? d?.id;
+
+          // For unweighted, we don’t compute distances here—just return top `limit`.
+          // (You could compute BFS distance per candidate if needed.)
+          return candIds.slice(0, Math.max(1, limit)).map(id => {
+            const d = byId.get(id);
+            return { id, type: d?.type, title: titleOf(d) };
+          });
+        }
+
+        // ---------- Unweighted via $graphLookup (optional) ----------
+        async function unweightedGraphLookup2Hop({
+          startId, relsArray, direction, limit, targetType, targetFilter, nodesModel, edgesModel
+        }) {
+          const E = edgesModel.collection.name;
+          const N = nodesModel.collection.name;
+          const relMatch = relsArray.length ? { relationship: { $in: relsArray } } : {};
+          // Note: $graphLookup can’t cap per-node fanout; only maxDepth (2).
+          // It walks edges where next.source == prev.target (out) or the reverse (in).
+
+          // Build one direction pipeline
+          const buildDir = (dir) => ([
+            {
+              $graphLookup: {
+                from: E,
+                startWith: String(startId),
+                connectFromField: (dir === 'out') ? 'target' : 'source',
+                connectToField:   (dir === 'out') ? 'source' : 'target',
+                as: 'walk',
+                maxDepth: 2,
+                depthField: 'd',
+                restrictSearchWithMatch: relMatch
+              }
+            },
+            // turn walked edges into candidate node ids at depth 2
+            { $unwind: '$walk' },
+            { $match: { 'walk.d': 1 } }, // first hop edges
+            // join again to get second hop from the 'walk' target/source
+            {
+              $lookup: {
+                from: E,
+                let: { via: (dir === 'out') ? '$walk.target' : '$walk.source' },
+                pipeline: [
+                  { $match: { $expr: { $eq: [ (dir === 'out') ? '$source' : '$target', '$$via' ] } } },
+                  ...(relsArray.length ? [{ $match: relMatch }] : []),
+                ],
+                as: 'hop2'
+              }
+            },
+            { $unwind: '$hop2' },
+            {
+              $project: {
+                cand: (dir === 'out') ? '$hop2.target' : '$hop2.source',
+                _id: 0
+              }
+            }
+          ]);
+
+          let base;
+          if (direction === 'out') base = buildDir('out');
+          else if (direction === 'in') base = buildDir('in');
+          else {
+            base = [
+              { $facet: { OUT: buildDir('out'), IN: buildDir('in') } },
+              { $project: { all: { $setUnion: ['$OUT', '$IN'] } } },
+              { $unwind: '$all' },
+              { $replaceRoot: { newRoot: '$all' } }
+            ];
+          }
+
+          const pipeline = [
+            ...base,
+            { $match: { cand: { $ne: String(startId) } } },
+            { $group: { _id: '$cand', c: { $sum: 1 } } },
+            { $sort: { c: -1 } },
+          ];
+
+          if (targetType || targetFilter) {
+            pipeline.push(
+              {
+                $lookup: {
+                  from: N,
+                  localField: '_id',
+                  foreignField: 'id',
+                  pipeline: [{ $project: { _id: 0, id: 1, type: 1, properties: 1, label: 1 } }],
+                  as: 'node'
+                }
+              },
+              { $unwind: '$node' },
+            );
+            if (targetType) {
+              pipeline.push({ $match: { 'node.type': Array.isArray(targetType) ? { $in: targetType } : targetType } });
+            }
+            if (targetFilter && typeof targetFilter === 'object') {
+              const tf = {};
+              for (const [k, v] of Object.entries(targetFilter)) tf[`node.${k}`] = v;
+              pipeline.push({ $match: tf });
+            }
+          }
+
+          pipeline.push({ $limit: Math.max(1, limit) }, { $project: { _id: 0, id: '$_id' } });
+
+          const rows = await edgesModel.aggregate(pipeline).allowDiskUse(true).exec();
+          if (!rows.length) return [];
+
+          const ids = rows.map(r => r.id);
+          const docs = await nodesModel.find(
+            { id: { $in: ids } },
+            { id: 1, label: 1, type: 1, properties: 1, _id: 0 }
+          ).lean();
+          const byId = new Map(docs.map(d => [d.id, d]));
+          const titleOf = (d) => d?.properties?.title ?? d?.properties?.name ?? d?.label ?? d?.id;
+
+          return rows.map(r => {
+            const d = byId.get(r.id);
+            return { id: r.id, type: d?.type, title: titleOf(d) };
+          });
+        }
+
+        // ===== dispatch =====
+        if (mode === 'weighted') {
           return await fastWeighted2Hop({
             startId,
-            relationship: rels,
+            relsArray,
             direction,
             fanout,
             limit,
             weightField,
+            defaultWeight,
             targetType,
             includePath,
             nodesModel,
             edgesModel
           });
-        }
-
-        // ---------- FALLBACK (your original logic, with fanout capping) ----------
-        // ---- helper: top-K neighbors per node using aggregation
-        async function topKNeighbors({ frontier, dir, rels, k, weightField }) {
-          if (!frontier?.length) return [];
-
-          const relFilter = rels ? { relationship: { $in: rels } } : {};
-
-          if (dir === 'out') {
-            const docs = await edgesModel.aggregate([
-              { $match: { source: { $in: frontier }, ...relFilter } },
-              { $sort: { [weightField]: -1, source: 1 } },
-              { $group: { _id: '$source', nbrs: { $push: '$target' } } },
-              { $project: { _id: 0, nbrs: { $slice: ['$nbrs', k] } } },
-            ]).allowDiskUse(true);
-            return docs.flatMap(d => d.nbrs);
-          }
-
-          if (dir === 'in') {
-            const docs = await edgesModel.aggregate([
-              { $match: { target: { $in: frontier }, ...relFilter } },
-              { $sort: { [weightField]: -1, target: 1 } },
-              { $group: { _id: '$target', nbrs: { $push: '$source' } } },
-              { $project: { _id: 0, nbrs: { $slice: ['$nbrs', k] } } },
-            ]).allowDiskUse(true);
-            return docs.flatMap(d => d.nbrs);
-          }
-
-          // 'any' → combine capped OUT and IN
-          const [outNbrs, inNbrs] = await Promise.all([
-            topKNeighbors({ frontier, dir: 'out', rels, k: Math.ceil(k / 2), weightField }),
-            topKNeighbors({ frontier, dir: 'in',  rels, k: Math.floor(k / 2), weightField }),
-          ]);
-          return [...new Set([...outNbrs, ...inNbrs])];
-        }
-
-        async function expand(frontier) {
-          return topKNeighbors({ frontier, dir: direction, rels, k: fanout, weightField });
-        }
-
-        async function expandMeta(frontier, step) {
-          const relsStep = toArray(step.relationship);
-          const dir = step.direction || 'any';
-          const k = Number.isFinite(step.fanout) ? step.fanout : fanout;
-          return topKNeighbors({ frontier, dir, rels: relsStep, k, weightField });
-        }
-
-        // --- 1) Build candidate set via simple hops or metaPath ---
-        let frontier = [startId];
-        let candidates = new Set();
-
-        if (Array.isArray(metaPath) && metaPath.length > 0) {
-          for (let i = 0; i < metaPath.length; i++) {
-            frontier = await expandMeta(frontier, metaPath[i]);
-            if (!frontier.length) break;
-            if (frontier.length > fanout * 8) frontier = frontier.slice(0, fanout * 8);
-          }
-          candidates = new Set(frontier);
         } else {
-          for (let i = 0; i < Math.max(1, hops); i++) {
-            frontier = await expand(frontier);
-            if (!frontier.length) break;
-            if (frontier.length > fanout * 8) frontier = frontier.slice(0, fanout * 8);
-          }
-          candidates = new Set(frontier);
-        }
-
-        candidates.delete(String(startId));
-
-        // Optional: constrain to targetType / targetFilter
-        let candIds = [...candidates];
-        if (targetType || targetFilter) {
-          const typeArr = toArray(targetType);
-          const nodeQuery = { id: { $in: candIds } };
-          if (typeArr) nodeQuery.type = { $in: typeArr };
-          if (targetFilter && typeof targetFilter === 'object') Object.assign(nodeQuery, targetFilter);
-          const docs = await nodesModel.find(nodeQuery, { id: 1 }).lean();
-          const ok = new Set(docs.map(d => d.id));
-          candIds = candIds.filter(id => ok.has(id));
-        }
-
-        if (candIds.length === 0) return [];
-
-        // --- 2) Score candidates (unchanged) ---
-        const results = [];
-        for (const cid of candIds) {
-          let out;
-          if (mode === 'weighted') {
-            out = await this.kgWeightedPath(startId, cid, {
-              directed: direction === 'out',
-              weightField,
-              defaultWeight
-            });
-          } else {
-            out = await this.kgShortestPath(startId, cid, {
-              directed: direction === 'out',
-              maxDepth: Math.max(2, hops + 2)
+          if (preferGraphLookup) {
+            // Try $graphLookup flavor (unweighted). May be slower on high-degree nodes.
+            return await unweightedGraphLookup2Hop({
+              startId, relsArray, direction, limit, targetType, targetFilter, nodesModel, edgesModel
             });
           }
-          if (Number.isFinite(out?.distance)) {
-            results.push({
-              id: cid,
-              distance: out.distance,
-              score: mode === 'weighted' ? (1 / (1 + out.distance)) : undefined,
-              path: includePath ? out.path : undefined
-            });
-          }
+          // Default: capped fanout (usually faster / more controllable)
+          return await unweightedCapped2Hop({
+            startId, relsArray, direction, fanout, limit, targetType, targetFilter, nodesModel, edgesModel
+          });
         }
-
-        if (!results.length) return [];
-
-        // --- 3) Sort and hydrate (unchanged) ---
-        if (mode === 'weighted') {
-          results.sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
-        } else {
-          results.sort((a, b) => a.distance - b.distance);
-        }
-        const top = results.slice(0, Math.max(1, Math.min(50, limit)));
-        const docs = await nodesModel.find(
-          { id: { $in: top.map(t => t.id) } },
-          { id: 1, label: 1, type: 1, properties: 1, _id: 0 }
-        ).lean();
-
-        const byId = new Map(docs.map(d => [d.id, d]));
-        const titleOf = (d) => d?.properties?.title ?? d?.properties?.name ?? d?.label ?? d?.id;
-
-        return top.map(t => {
-          const d = byId.get(t.id);
-          return {
-            id: t.id,
-            type: d?.type,
-            title: titleOf(d),
-            ...(mode === 'weighted' ? { score: t.score } : { distance: t.distance }),
-            ...(includePath && t.path ? { path: t.path } : {})
-          };
-        });
       };
     }
+
 
   if (Model && !Model.kgRecommend) {
     Model.kgRecommend = schema.statics.kgRecommend;
