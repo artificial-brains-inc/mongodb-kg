@@ -476,81 +476,114 @@ function bindModel(modelOrSchema, config = {}) {
           ? relationship
           : (relationship ? [relationship] : []);
 
-        // ----- Weighted: fast aggregated 2-hop (per-hop sort+limit) -----
+        // ------------------------------------------------------------
+        // Weighted 2-hop, robust across 'out' | 'in' | 'any'
+        // - Normalizes direction via $cond instead of $facet.
+        // - Returns score, w1, w2, distance, and optional path.
+        // ------------------------------------------------------------
         async function weighted2Hop() {
           const E = edgesModel.collection.name;
           const N = nodesModel.collection.name;
-          const relMatchStage = rels.length ? [{ $match: { relationship: { $in: rels } } }] : [];
+          const relMatch = rels.length ? { relationship: { $in: rels } } : {};
 
-          const w1Expr = { $ifNull: [`$${weightField}`, defaultWeight] };
-          const w2Expr = { $ifNull: [`$${weightField}`, defaultWeight] };
+          // Helper to build hop1 and hop2 for each direction mode
+          const buildPipelines = (dir) => {
+            // Hop-1: pick neighbors of start and compute w1.
+            // For 'any', we match edges where source==start OR target==start,
+            // then normalize 'via' with a $cond.
+            const hop1Match =
+              dir === 'out'
+                ? { $match: { source: start, ...relMatch } }
+                : dir === 'in'
+                ? { $match: { target: start, ...relMatch } }
+                : { $match: { $or: [{ source: start }, { target: start }], ...relMatch } };
 
-          // hop1 OUT/IN (ranked by weight, limited)
-          const hop1Out = [
-            { $match: { source: start } },
-            ...relMatchStage,
-            { $addFields: { _w1: w1Expr } },
-            { $sort: { _w1: -1, source: 1 } },
-            { $limit: fanout },
-            { $project: { _id: 0, via: '$target', w1: '$_w1' } }
-          ];
-          const hop1In = [
-            { $match: { target: start } },
-            ...relMatchStage,
-            { $addFields: { _w1: w1Expr } },
-            { $sort: { _w1: -1, target: 1 } },
-            { $limit: fanout },
-            { $project: { _id: 0, via: '$source', w1: '$_w1' } }
-          ];
+            const hop1Via =
+              dir === 'out'
+                ? { $project: { _id: 0, via: '$target', w1: { $ifNull: [`$${weightField}`, defaultWeight] } } }
+                : dir === 'in'
+                ? { $project: { _id: 0, via: '$source', w1: { $ifNull: [`$${weightField}`, defaultWeight] } } }
+                : {
+                    $project: {
+                      _id: 0,
+                      via: {
+                        $cond: [{ $eq: ['$source', start] }, '$target', '$source']
+                      },
+                      w1: { $ifNull: [`$${weightField}`, defaultWeight] }
+                    }
+                  };
 
-          // hop2 from 'via' (ranked by weight, limited)
-          const hop2 = (dir) => ([
-            {
-              $lookup: {
-                from: E,
-                let: { via: '$via' },
-                pipeline: [
-                  { $match: { $expr: { $eq: [dir === 'out' ? '$source' : '$target', '$$via'] } } },
-                  ...relMatchStage,
-                  { $addFields: { _w2: w2Expr } },
-                  { $sort: { _w2: -1 } },
-                  { $limit: fanout },
-                  { $project: { _id: 0, cand: dir === 'out' ? '$target' : '$source', w2: '$_w2' } }
-                ],
-                as: 'two'
+            const hop1Sort = { $sort: { w1: -1 } };
+            const hop1Limit = { $limit: fanout };
+
+            // Hop-2: from via -> candidates, normalize cand + w2 by direction
+            const hop2MatchExpr =
+              dir === 'out'
+                ? { $expr: { $eq: ['$source', '$$via'] } }
+                : dir === 'in'
+                ? { $expr: { $eq: ['$target', '$$via'] } }
+                : {
+                    $expr: {
+                      $or: [
+                        { $eq: ['$source', '$$via'] },
+                        { $eq: ['$target', '$$via'] }
+                      ]
+                    }
+                  };
+
+            const hop2CandProject =
+              dir === 'out'
+                ? { cand: '$target', w2: { $ifNull: [`$${weightField}`, defaultWeight] }, _id: 0 }
+                : dir === 'in'
+                ? { cand: '$source', w2: { $ifNull: [`$${weightField}`, defaultWeight] }, _id: 0 }
+                : {
+                    _id: 0,
+                    cand: {
+                      $cond: [{ $eq: ['$source', '$$via'] }, '$target', '$source']
+                    },
+                    w2: { $ifNull: [`$${weightField}`, defaultWeight] }
+                  };
+
+            const hop2Lookup = [
+              {
+                $lookup: {
+                  from: E,
+                  let: { via: '$via' },
+                  pipeline: [
+                    { $match: hop2MatchExpr },
+                    ...(rels.length ? [{ $match: relMatch }] : []),
+                    { $project: hop2CandProject },
+                    { $sort: { w2: -1 } },
+                    { $limit: fanout }
+                  ],
+                  as: 'two'
+                }
+              },
+              { $unwind: '$two' },
+              {
+                $project: {
+                  _id: 0,
+                  cand: '$two.cand',
+                  via: '$via',
+                  w1: '$w1',
+                  w2: '$two.w2',
+                  score: { $add: ['$w1', '$two.w2'] }
+                }
               }
-            },
-            { $unwind: '$two' },
-            {
-              $project: {
-                _id: 0,
-                cand: '$two.cand',
-                via: '$via',
-                w1: '$w1',
-                w2: '$two.w2',
-                score: { $add: ['$w1', '$two.w2'] }
-              }
-            }
-          ]);
-
-          let base;
-          if (direction === 'out') base = [...hop1Out, ...hop2('out')];
-          else if (direction === 'in') base = [...hop1In, ...hop2('in')];
-          else {
-            base = [
-              { $facet: { OUT: [...hop1Out, ...hop2('out')], IN: [...hop1In, ...hop2('in')] } },
-              { $project: { all: { $concatArrays: ['$OUT', '$IN'] } } },
-              { $unwind: '$all' },
-              { $replaceRoot: { newRoot: '$all' } }
             ];
-          }
 
-          // Keep the BEST (max score) path per candidate, while preserving w1/w2/via
+            return [hop1Match, hop1Via, hop1Sort, hop1Limit, ...hop2Lookup];
+          };
+
+          // Build base pipeline for the selected direction
+          let base = buildPipelines(direction);
+
           const pipeline = [
             ...base,
             { $match: { cand: { $ne: start } } },
-            { $sort: { score: -1 } }, // ensures $first below is the best path
+            { $sort: { score: -1 } },
             {
+              // keep BEST path per candidate
               $group: {
                 _id: '$cand',
                 score: { $first: '$score' },
@@ -562,7 +595,7 @@ function bindModel(modelOrSchema, config = {}) {
             { $sort: { score: -1 } },
           ];
 
-          // optional type/filter
+          // Optional node filtering
           if (targetType || targetFilter) {
             pipeline.push(
               {
@@ -613,7 +646,7 @@ function bindModel(modelOrSchema, config = {}) {
               id: r.id,
               type: d?.type,
               title: titleOf(d),
-              score: r.score,    // w1 + w2
+              score: r.score,      // w1 + w2 actually used
               w1: r.w1,
               w2: r.w2,
               distance: 2
@@ -623,7 +656,9 @@ function bindModel(modelOrSchema, config = {}) {
           });
         }
 
-        // ----- Unweighted fallback: capped 2-hop fanout (fast & predictable) -----
+        // ------------------------------------------------------------
+        // Unweighted 2-hop with capped fanout (fast, predictable)
+        // ------------------------------------------------------------
         async function unweighted2HopCapped() {
           const relFilter = rels.length ? { relationship: { $in: rels } } : {};
 
@@ -653,9 +688,9 @@ function bindModel(modelOrSchema, config = {}) {
           }
 
           let frontier = [start];
-          frontier = await topK(frontier, direction, fanout);       // hop 1
+          frontier = await topK(frontier, direction, fanout); // hop 1
           if (!frontier.length) return [];
-          frontier = await topK(frontier, direction, fanout);       // hop 2
+          frontier = await topK(frontier, direction, fanout); // hop 2
           if (!frontier.length) return [];
 
           const cand = [...new Set(frontier.filter(id => id !== start))];
@@ -673,7 +708,7 @@ function bindModel(modelOrSchema, config = {}) {
           }
           if (!candIds.length) return [];
 
-          // hydrate + present (no score, but keep a distance=2 for parity)
+          // hydrate + present
           const docs = await nodesModel.find(
             { id: { $in: candIds } },
             { id: 1, label: 1, type: 1, properties: 1, _id: 0 }
@@ -691,13 +726,14 @@ function bindModel(modelOrSchema, config = {}) {
         // ===== dispatch =====
         if (mode === 'weighted') {
           const rows = await weighted2Hop();
-          if (!rows.length) return await unweighted2HopCapped();
+          if (!rows.length) return await unweighted2HopCapped(); // graceful fallback
           return rows;
         } else {
           return await unweighted2HopCapped();
         }
       };
     }
+
 
 
   if (Model && !Model.kgRecommend) {
