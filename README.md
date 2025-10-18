@@ -221,7 +221,9 @@ app.get('/api/graph', async (_req, res) => {
 });
 ```
 
-You can visualize this data using D3.js, Cytoscape.js, or any other graph library.
+If querying nodes and edges to diplay the graph, make sure you query one first, and then run a query based on edge's target or source to query the proper relationships between nodes. 
+
+You can visualize data using D3.js, Cytoscape.js, or any other graph library.
 A minimal D3 example is included in `/public/js/graph.js` of the mflix example. 
 
 ---
@@ -314,25 +316,28 @@ Use this to:
 ### 4C. Generic Recommendations
 
 Use `kgRecommend(startId, options)` to fetch top-k related nodes without writing traversal code.
+By default, this runs a 2-hop expansion with a fan-out cap of 64 neighbors per node (sorted by descending weight).
 
 ```js
 const items = await AnyBoundModel.kgRecommend('node_X', {
-  mode: 'weighted',           // 'unweighted' | 'weighted'
-  limit: 5,                   // Simple expansion (2 hops along a relationship):
-  hops: 2,
-  relationship: 'connected_to',
-  direction: 'any',           // 'out' | 'in' | 'any'
-  targetType: 'nodeType',     // optional
-  // Or use an explicit meta-path (overrides hops/relationship):
+  mode: 'weighted',            // 'unweighted' | 'weighted' (default: 'unweighted')
+  limit: 5,                    // number of top related nodes to return
+  relationship: 'connected_to',// edge type(s) to traverse
+  direction: 'any',            // 'out' | 'in' | 'any' (default: 'any')
+  targetType: 'nodeType',      // optional node type filter
+  includePath: true,           // return path nodes for explainability (optional)
+  // Advanced options:
   // metaPath: [
-  //   { relationship: 'A', direction: 'out' },
-  //   { relationship: 'B', direction: 'in' }
-  // ],  
-  includePath: true           // optional explainability
+  //   { relationship: 'rated', direction: 'out' },
+  //   { relationship: 'belongs_to', direction: 'in' }
+  // ],
 });
 
 
 ```
+Notes:
+* In current version, if multiple neighbors share the same weight, the order is deterministic (index order).
+
 
 
 ## API Reference

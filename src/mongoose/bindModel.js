@@ -451,6 +451,7 @@ function bindModel(modelOrSchema, config = {}) {
    *   - defaultWeight: number (default 1)
    *   - // Advanced: explicit meta-path pattern overrides the simple expansion
    *   - metaPath: Array<{ relationship?: string|string[], direction?: 'out'|'in'|'any', nodeType?: string|string[] }>
+   *   - fanout at 64 nodes per step is default
    */
   if (!schema.statics.kgRecommend) {
     schema.statics.kgRecommend = async function (
@@ -472,68 +473,67 @@ function bindModel(modelOrSchema, config = {}) {
         defaultWeight = 1,
 
         // Advanced meta-path
-        metaPath
+        metaPath,
+
+        // cap branching factor per node per hop
+        fanout = 64,
       } = {}
     ) {
       const { edgesModel, nodesModel } = getCtx();
       if (!edgesModel || !nodesModel) throw new Error('kgInit() must be called');
 
-      // --- helpers ---
       const toArray = (x) => (Array.isArray(x) ? x : x != null ? [x] : null);
       const rels = toArray(relationship);
 
-      // Expand from a frontier of node ids by 1 hop according to direction/relationship
-      async function expand(frontier) {
-        const $in = frontier;
-        const dir = direction; // 'out' | 'in' | 'any'
+      // ---- helper: top-K neighbors per node using aggregation
+      async function topKNeighbors({ frontier, dir, rels, k, weightField }) {
+        if (!frontier?.length) return [];
+
+        const match = {};
         const relFilter = rels ? { relationship: { $in: rels } } : {};
 
         if (dir === 'out') {
-          const edges = await edgesModel.find({ source: { $in }, ...relFilter }, { target: 1 }).lean();
-          return edges.map(e => e.target);
-        } else if (dir === 'in') {
-          const edges = await edgesModel.find({ target: { $in }, ...relFilter }, { source: 1 }).lean();
-          return edges.map(e => e.source);
-        } else { // 'any'
-          const edges = await edgesModel.find({
-            $or: [{ source: { $in } }, { target: { $in } }],
-            ...relFilter
-          }, { source: 1, target: 1 }).lean();
-          const next = [];
-          const set = new Set($in.map(String));
-          for (const e of edges) {
-            if (!set.has(String(e.source))) next.push(e.source);
-            if (!set.has(String(e.target))) next.push(e.target);
-          }
-          return next;
+          Object.assign(match, { source: { $in: frontier }, ...relFilter });
+          const docs = await edgesModel.aggregate([
+            { $match: match },
+            { $sort: { [weightField]: -1, source: 1 } },         // uses (source, relationship, weight:-1)
+            { $group: { _id: '$source', nbrs: { $push: '$target' } } },
+            { $project: { _id: 0, nbrs: { $slice: ['$nbrs', k] } } },
+          ]).allowDiskUse(true);
+          return docs.flatMap(d => d.nbrs);
         }
+
+        if (dir === 'in') {
+          Object.assign(match, { target: { $in: frontier }, ...relFilter });
+          const docs = await edgesModel.aggregate([
+            { $match: match },
+            { $sort: { [weightField]: -1, target: 1 } },         // uses (target, relationship, weight:-1)
+            { $group: { _id: '$target', nbrs: { $push: '$source' } } },
+            { $project: { _id: 0, nbrs: { $slice: ['$nbrs', k] } } },
+          ]).allowDiskUse(true);
+          return docs.flatMap(d => d.nbrs);
+        }
+
+        // dir === 'any' → combine capped OUT and IN (keeps query index-friendly)
+        const [outNbrs, inNbrs] = await Promise.all([
+          topKNeighbors({ frontier, dir: 'out', rels, k: Math.ceil(k / 2), weightField }),
+          topKNeighbors({ frontier, dir: 'in',  rels, k: Math.floor(k / 2), weightField }),
+        ]);
+        // de-dup
+        return [...new Set([...outNbrs, ...inNbrs])];
       }
 
-      // Meta-path aware expansion; each step can set its own direction/relationship/type
+      // Expand by simple hops, capped fanout
+      async function expand(frontier) {
+        return topKNeighbors({ frontier, dir: direction, rels, k: fanout, weightField });
+      }
+
+      // Meta-path aware expansion; each step can set direction/relationship and fanout
       async function expandMeta(frontier, step) {
         const relsStep = toArray(step.relationship);
         const dir = step.direction || 'any';
-        const relFilter = relsStep ? { relationship: { $in: relsStep } } : {};
-
-        if (dir === 'out') {
-          const edges = await edgesModel.find({ source: { $in: frontier }, ...relFilter }, { target: 1 }).lean();
-          return edges.map(e => e.target);
-        } else if (dir === 'in') {
-          const edges = await edgesModel.find({ target: { $in: frontier }, ...relFilter }, { source: 1 }).lean();
-          return edges.map(e => e.source);
-        } else {
-          const edges = await edgesModel.find({
-            $or: [{ source: { $in: frontier } }, { target: { $in: frontier } }],
-            ...relFilter
-          }, { source: 1, target: 1 }).lean();
-          const next = [];
-          const set = new Set(frontier.map(String));
-          for (const e of edges) {
-            if (!set.has(String(e.source))) next.push(e.source);
-            if (!set.has(String(e.target))) next.push(e.target);
-          }
-          return next;
-        }
+        const k = Number.isFinite(step.fanout) ? step.fanout : fanout;
+        return topKNeighbors({ frontier, dir, rels: relsStep, k, weightField });
       }
 
       // --- 1) Build candidate set via simple hops or metaPath ---
@@ -541,21 +541,22 @@ function bindModel(modelOrSchema, config = {}) {
       let candidates = new Set();
 
       if (Array.isArray(metaPath) && metaPath.length > 0) {
-        // follow explicit steps
         for (let i = 0; i < metaPath.length; i++) {
           frontier = await expandMeta(frontier, metaPath[i]);
+          if (!frontier.length) break;
+          // Optional: also cap the frontier size overall to avoid blowup
+          if (frontier.length > fanout * 8) frontier = frontier.slice(0, fanout * 8);
         }
         candidates = new Set(frontier);
       } else {
-        // do N hops of simple expansion
         for (let i = 0; i < Math.max(1, hops); i++) {
-          const next = await expand(frontier);
-          frontier = [...new Set(next)];
+          frontier = await expand(frontier);
+          if (!frontier.length) break;
+          if (frontier.length > fanout * 8) frontier = frontier.slice(0, fanout * 8);
         }
         candidates = new Set(frontier);
       }
 
-      // Remove start node
       candidates.delete(String(startId));
 
       // Optional: constrain to targetType / targetFilter
@@ -565,7 +566,6 @@ function bindModel(modelOrSchema, config = {}) {
         const nodeQuery = { id: { $in: candIds } };
         if (typeArr) nodeQuery.type = { $in: typeArr };
         if (targetFilter && typeof targetFilter === 'object') Object.assign(nodeQuery, targetFilter);
-
         const docs = await nodesModel.find(nodeQuery, { id: 1 }).lean();
         const ok = new Set(docs.map(d => d.id));
         candIds = candIds.filter(id => ok.has(id));
@@ -573,20 +573,20 @@ function bindModel(modelOrSchema, config = {}) {
 
       if (candIds.length === 0) return [];
 
-      // --- 2) Score candidates using the built-in path functions ---
+      // --- 2) Score candidates (unchanged) ---
       const results = [];
       for (const cid of candIds) {
         let out;
         if (mode === 'weighted') {
           out = await this.kgWeightedPath(startId, cid, {
-            directed: direction === 'out', // sensible default for weighted
+            directed: direction === 'out',
             weightField,
             defaultWeight
           });
         } else {
           out = await this.kgShortestPath(startId, cid, {
-            directed: direction === 'out', // or false if you prefer undirected for hops
-            maxDepth: Math.max(2, hops + 2) // give it a bit of headroom
+            directed: direction === 'out',
+            maxDepth: Math.max(2, hops + 2)
           });
         }
         if (Number.isFinite(out?.distance)) {
@@ -601,10 +601,9 @@ function bindModel(modelOrSchema, config = {}) {
 
       if (results.length === 0) return [];
 
-      // --- 3) Sort + attach titles/labels for convenience ---
+      // --- 3) Sort and hydrate (unchanged) ---
       results.sort((a, b) => a.distance - b.distance);
       const top = results.slice(0, Math.max(1, Math.min(50, limit)));
-
       const docs = await nodesModel.find(
         { id: { $in: top.map(t => t.id) } },
         { id: 1, label: 1, type: 1, properties: 1, _id: 0 }
