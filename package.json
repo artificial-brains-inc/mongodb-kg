@@ -2,13 +2,30 @@
   "name": "mongodb-kg",
   "version": "0.1.0",
   "description": "Generic knowledge graph SDK for Mongoose models to manage nodes and edges.",
-  "main": "src/index.js",
-  "types": "index.d.ts",
+  "license": "Apache-2.0",
   "type": "commonjs",
+  "main": "src/index.js",
+  "types": "types/index.d.ts",
   "keywords": ["graph", "mongoose", "knowledge graph", "sdk"],
   "author": "Artificial Brains Inc",
-  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/artificial-brains-inc/mongodb-kg.git"
+  },
+  "bugs": {
+    "url": "https://github.com/artificial-brains-inc/mongodb-kg/issues"
+  },
+  "homepage": "https://github.com/artificial-brains-inc/mongodb-kg#readme",
   "peerDependencies": {
     "mongoose": ">=6"
-  }
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "src/",
+    "types/",
+    "LICENSE",
+    "README.md"
+  ]
 }
