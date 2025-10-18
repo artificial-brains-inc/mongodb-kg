@@ -35,7 +35,7 @@ function bindModel(modelOrSchema, config = {}) {
     // If a Model was passed, keep it; if a Schema was passed, Model stays null.
   const Model = modelOrSchema && typeof modelOrSchema.find === 'function' ? modelOrSchema : null;
 
-  
+
     // === Attach distance helpers ============================================
     if (!schema.statics.kgShortestPath) {
       schema.statics.kgShortestPath = async function(aId, bId, opts = {}) {
@@ -53,6 +53,10 @@ function bindModel(modelOrSchema, config = {}) {
     if (Model) {
       if (!Model.kgShortestPath) Model.kgShortestPath = schema.statics.kgShortestPath;
       if (!Model.kgWeightedPath) Model.kgWeightedPath = schema.statics.kgWeightedPath;
+    }
+
+    if (Model && !Model.kgRecommend) {
+      Model.kgRecommend = schema.statics.kgRecommend;
     }
     // ========================================================================
 
@@ -300,8 +304,8 @@ function bindModel(modelOrSchema, config = {}) {
         : { $or: [{ source: { $in: frontier } }, { target: { $in: frontier } }] };
 
       const edges = await edgesModel
-        .find(qry, { projection: { source: 1, target: 1 } })
-        .toArray();
+      .find(qry, 'source target') 
+      .lean();
 
       // Build adjacency for this layer
       const adj = new Map(); // nodeStr -> neighborStr[]
@@ -395,8 +399,8 @@ function bindModel(modelOrSchema, config = {}) {
       // Only edges *from* u in directed graphs; all incident edges if undirected
       const qry = directed ? { source: u } : { $or: [{ source: u }, { target: u }] };
       const edges = await edgesModel
-        .find(qry, { projection: { source: 1, target: 1, [weightField]: 1 } })
-        .toArray();
+      .find(qry, `source target ${weightField}`)
+      .lean();
 
       for (const e of edges) {
         const v = directed ? _asStr(e.target) : (e.source === u ? _asStr(e.target) : _asStr(e.source));
@@ -420,6 +424,205 @@ function bindModel(modelOrSchema, config = {}) {
     }
     path.reverse();
     return { distance: dist.get(goal), path };
+  }
+
+  // === Generic recommendation helper =========================================
+    /**
+   * Generic recommender over the graph.
+   *
+   * @param {string} startId - id of the starting node (e.g., 'movie_...', 'user_...')
+   * @param {object} opts
+   *   - mode: 'unweighted' | 'weighted' (default 'unweighted')
+   *   - limit: number (default 5)
+   *   - includePath: boolean (default false)
+   *   - // Simple expansion mode (ignore metaPath if provided):
+   *   - hops: number of edge traversals (default 2)
+   *   - relationship: string | string[] (edge relationship(s) to use) (optional)
+   *   - direction: 'out' | 'in' | 'any' (default 'any')
+   *   - targetType: string | string[] (optional node type filter)
+   *   - targetFilter: Mongo-ish filter applied to nodesModel (optional)
+   *   - // Weighted options:
+   *   - weightField: string (default 'weight')
+   *   - defaultWeight: number (default 1)
+   *   - // Advanced: explicit meta-path pattern overrides the simple expansion
+   *   - metaPath: Array<{ relationship?: string|string[], direction?: 'out'|'in'|'any', nodeType?: string|string[] }>
+   */
+  if (!schema.statics.kgRecommend) {
+    schema.statics.kgRecommend = async function (
+      startId,
+      {
+        mode = 'unweighted',
+        limit = 5,
+        includePath = false,
+
+        // Simple expansion defaults
+        hops = 2,
+        relationship,
+        direction = 'any',
+        targetType,
+        targetFilter,
+
+        // Weighted
+        weightField = 'weight',
+        defaultWeight = 1,
+
+        // Advanced meta-path
+        metaPath
+      } = {}
+    ) {
+      const { edgesModel, nodesModel } = getCtx();
+      if (!edgesModel || !nodesModel) throw new Error('kgInit() must be called');
+
+      // --- helpers ---
+      const toArray = (x) => (Array.isArray(x) ? x : x != null ? [x] : null);
+      const rels = toArray(relationship);
+
+      // Expand from a frontier of node ids by 1 hop according to direction/relationship
+      async function expand(frontier) {
+        const $in = frontier;
+        const dir = direction; // 'out' | 'in' | 'any'
+        const relFilter = rels ? { relationship: { $in: rels } } : {};
+
+        if (dir === 'out') {
+          const edges = await edgesModel.find({ source: { $in }, ...relFilter }, { target: 1 }).lean();
+          return edges.map(e => e.target);
+        } else if (dir === 'in') {
+          const edges = await edgesModel.find({ target: { $in }, ...relFilter }, { source: 1 }).lean();
+          return edges.map(e => e.source);
+        } else { // 'any'
+          const edges = await edgesModel.find({
+            $or: [{ source: { $in } }, { target: { $in } }],
+            ...relFilter
+          }, { source: 1, target: 1 }).lean();
+          const next = [];
+          const set = new Set($in.map(String));
+          for (const e of edges) {
+            if (!set.has(String(e.source))) next.push(e.source);
+            if (!set.has(String(e.target))) next.push(e.target);
+          }
+          return next;
+        }
+      }
+
+      // Meta-path aware expansion; each step can set its own direction/relationship/type
+      async function expandMeta(frontier, step) {
+        const relsStep = toArray(step.relationship);
+        const dir = step.direction || 'any';
+        const relFilter = relsStep ? { relationship: { $in: relsStep } } : {};
+
+        if (dir === 'out') {
+          const edges = await edgesModel.find({ source: { $in: frontier }, ...relFilter }, { target: 1 }).lean();
+          return edges.map(e => e.target);
+        } else if (dir === 'in') {
+          const edges = await edgesModel.find({ target: { $in: frontier }, ...relFilter }, { source: 1 }).lean();
+          return edges.map(e => e.source);
+        } else {
+          const edges = await edgesModel.find({
+            $or: [{ source: { $in: frontier } }, { target: { $in: frontier } }],
+            ...relFilter
+          }, { source: 1, target: 1 }).lean();
+          const next = [];
+          const set = new Set(frontier.map(String));
+          for (const e of edges) {
+            if (!set.has(String(e.source))) next.push(e.source);
+            if (!set.has(String(e.target))) next.push(e.target);
+          }
+          return next;
+        }
+      }
+
+      // --- 1) Build candidate set via simple hops or metaPath ---
+      let frontier = [startId];
+      let candidates = new Set();
+
+      if (Array.isArray(metaPath) && metaPath.length > 0) {
+        // follow explicit steps
+        for (let i = 0; i < metaPath.length; i++) {
+          frontier = await expandMeta(frontier, metaPath[i]);
+        }
+        candidates = new Set(frontier);
+      } else {
+        // do N hops of simple expansion
+        for (let i = 0; i < Math.max(1, hops); i++) {
+          const next = await expand(frontier);
+          frontier = [...new Set(next)];
+        }
+        candidates = new Set(frontier);
+      }
+
+      // Remove start node
+      candidates.delete(String(startId));
+
+      // Optional: constrain to targetType / targetFilter
+      let candIds = [...candidates];
+      if (targetType || targetFilter) {
+        const typeArr = toArray(targetType);
+        const nodeQuery = { id: { $in: candIds } };
+        if (typeArr) nodeQuery.type = { $in: typeArr };
+        if (targetFilter && typeof targetFilter === 'object') Object.assign(nodeQuery, targetFilter);
+
+        const docs = await nodesModel.find(nodeQuery, { id: 1 }).lean();
+        const ok = new Set(docs.map(d => d.id));
+        candIds = candIds.filter(id => ok.has(id));
+      }
+
+      if (candIds.length === 0) return [];
+
+      // --- 2) Score candidates using the built-in path functions ---
+      const results = [];
+      for (const cid of candIds) {
+        let out;
+        if (mode === 'weighted') {
+          out = await this.kgWeightedPath(startId, cid, {
+            directed: direction === 'out', // sensible default for weighted
+            weightField,
+            defaultWeight
+          });
+        } else {
+          out = await this.kgShortestPath(startId, cid, {
+            directed: direction === 'out', // or false if you prefer undirected for hops
+            maxDepth: Math.max(2, hops + 2) // give it a bit of headroom
+          });
+        }
+        if (Number.isFinite(out?.distance)) {
+          results.push({
+            id: cid,
+            distance: out.distance,
+            score: mode === 'weighted' ? (1 / (1 + out.distance)) : undefined,
+            path: includePath ? out.path : undefined
+          });
+        }
+      }
+
+      if (results.length === 0) return [];
+
+      // --- 3) Sort + attach titles/labels for convenience ---
+      results.sort((a, b) => a.distance - b.distance);
+      const top = results.slice(0, Math.max(1, Math.min(50, limit)));
+
+      const docs = await nodesModel.find(
+        { id: { $in: top.map(t => t.id) } },
+        { id: 1, label: 1, type: 1, properties: 1, _id: 0 }
+      ).lean();
+
+      const byId = new Map(docs.map(d => [d.id, d]));
+      const titleOf = (d) => d?.properties?.title ?? d?.properties?.name ?? d?.label ?? d?.id;
+
+      return top.map(t => {
+        const d = byId.get(t.id);
+        return {
+          id: t.id,
+          type: d?.type,
+          title: titleOf(d),
+          distance: t.distance,
+          ...(t.score !== undefined ? { score: t.score } : {}),
+          ...(includePath && t.path ? { path: t.path } : {})
+        };
+      });
+    };
+  }
+  if (Model && !Model.kgRecommend) {
+    Model.kgRecommend = schema.statics.kgRecommend;
   }
   // ======================== END OF GRAPH HELPERS ===================================================
 

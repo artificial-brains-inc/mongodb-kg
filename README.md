@@ -311,6 +311,30 @@ Use this to:
 
 
 
+### 4C. Generic Recommendations
+
+Use `kgRecommend(startId, options)` to fetch top-k related nodes without writing traversal code.
+
+```js
+const items = await AnyBoundModel.kgRecommend('node_X', {
+  mode: 'weighted',           // 'unweighted' | 'weighted'
+  limit: 5,                   // Simple expansion (2 hops along a relationship):
+  hops: 2,
+  relationship: 'connected_to',
+  direction: 'any',           // 'out' | 'in' | 'any'
+  targetType: 'nodeType',     // optional
+  // Or use an explicit meta-path (overrides hops/relationship):
+  // metaPath: [
+  //   { relationship: 'A', direction: 'out' },
+  //   { relationship: 'B', direction: 'in' }
+  // ],  
+  includePath: true           // optional explainability
+});
+
+
+```
+
+
 ## API Reference
 
 ### kgInit(options)
