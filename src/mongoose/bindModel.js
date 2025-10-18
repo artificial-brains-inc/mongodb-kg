@@ -69,6 +69,11 @@ function bindModel(modelOrSchema, config = {}) {
     onError
   } = config;
 
+  schema.statics.__kgBinding = { buildNode, buildEdges, buildCleanup };
+  if (Model) {
+    Model.__kgBinding = schema.statics.__kgBinding;
+  }
+
   const reportHookError = typeof onError === 'function'
     ? (err, hook) => {
         try {

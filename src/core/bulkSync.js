@@ -70,11 +70,11 @@ async function kgBulkSync(opts = {}) {
 
       for await (const doc of cursor) {
         if (typeof buildNode === 'function') {
-          const n = await Promise.resolve(buildNode(doc));
+          const n = await Promise.resolve(buildNode(doc, ctx));
           if (n?.id) nodeBuf.push(n);
         }
         if (typeof buildEdges === 'function') {
-          const es = await Promise.resolve(buildEdges(doc));
+          const es = await Promise.resolve(buildEdges(doc, ctx));
           if (Array.isArray(es) && es.length) edgeBuf.push(...es.filter(Boolean));
         }
 
