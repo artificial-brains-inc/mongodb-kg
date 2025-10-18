@@ -9,6 +9,16 @@ The SDK wires itself into your Mongoose models through middleware so the graph s
 
 ---
 
+## Demo
+
+A working demo using this SDK is available here:  
+[mongodb-kg-sdk-mFlix Demo](https://github.com/artificial-brains-inc/mongodb-kg-sdk-mFlix)
+
+The demo shows how to integrate **mongodb-kg** into a real Express + Mongoose app.
+
+---
+
+
 ## Features
 
 * Schema-agnostic: works with any model; you provide simple mapping functions.
