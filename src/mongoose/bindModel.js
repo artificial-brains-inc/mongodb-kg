@@ -652,6 +652,7 @@ function bindModel(modelOrSchema, config = {}) {
               distance: 2
             };
             if (includePath && r.via) out.path = [start, r.via, r.id];
+            console.log('recommend weight output:', out);
             return out;
           });
         }
