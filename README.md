@@ -52,8 +52,7 @@ const MflixComment = require('./models/comments');
 
 kgInit({
   nodesModel: NodesModel,
-  edgesModel: EdgesModel,
-  repos: { MflixMovie, MflixUser, MflixComment } // optional
+  edgesModel: EdgesModel
 });
 ```
 
@@ -103,61 +102,89 @@ Edges always include:
 ### 2. Bind Your Models
 
 `bindModel()` defines how a document becomes a node and which edges it emits.
-The SDK attaches middleware to each bound Mongoose model.
+The SDK attaches middleware to each bound Mongoose model. 
 
+In your model definition (e.g. movies)
 ```js
+
+
 const { bindModel } = require('mongodb-kg');
 
+
+const MovieSchema = new Schema({ /* your schema */});
+
 // Movies → nodes
-bindModel(MflixMovie, {
-  node: (m) => ({
-    id: `movie-${m._id}`,
-    label: m.title || 'Untitled Movie',
-    type: 'movie',
-    source_collection: 'movies',
-    source_id: m._id,
-    properties: { year: m.year, title: m.title, plot: m.plot }
-  }),
-  cleanup: (m) => [
-    { source: `movie-${m._id}` },
-    { target: `movie-${m._id}` }
-  ]
+bindModel(MovieSchema, {
+    node: (m) => ({
+      id: `movie_${m._id}`,
+      label: m.title || 'Untitled Movie',
+      type: 'movie',
+      source_collection: 'movies',
+      source_id: m._id,
+      properties: { title: m.title, plot: m.plot, year: m.year }
+    }),
+    cleanup: (m) => [{ source: `movie_${m._id}` }, { target: `movie_${m._id}` }]
+  });
+
+//make sure you bind your model before exporting it. 
+module.exports = mongoose.model('MflixMovie', MovieSchema);
+
+```
+
+Example 2: Edges in your comments model
+
+``` js 
+
+const mongoose = require('mongoose');
+const { Schema } = mongoose;
+const { bindModel } = require('mongodb-kg');
+
+
+const CommentSchema = new Schema({
+  /* schema */
 });
 
-// Comments → commenter node + edge commenter → movie
-bindModel(MflixComment, {
-  node: (c) => ({
-    id: `user-${c._id}`,
-    label: c.name || 'Commenter',
-    type: 'person',
-    source_collection: 'comments',
-    source_id: c._id,
-    properties: { text: c.text }
-  }),
-  edges: (c) => {
-    const commenter = `user-${c._id}`;
-    const movie = `movie-${c.movie_id}`;
-    return [{
-      id: `${commenter}_commented_on_${movie}`,
-      source: commenter,
-      target: movie,
-      relationship: 'commented_on',
-      weight: 1,
-      properties: { date: c.date }
-    }];
-  },
-  cleanup: (c) => [{ source: `user-${c._id}` }]
-});
+
+// Commenter → edge comment → movie
+  bindModel(CommentSchema, {
+    edges: (c) => {
+      const commenter = `user_${c.email}`;
+      const movie     = `movie_${c.movie_id}`;
+      return [{
+        id: `${commenter}_commented_on_${movie}`,
+        source: commenter,
+        target: movie,
+        relationship: 'commented_on',
+        weight: 1, // adjust as necessary
+        properties: { text: c.text ?? null }
+      }];
+    },
+    cleanup: (c) => [{ source: `user_${c.email}` }]
+  });
+
+module.exports = mongoose.model('MflixComment', CommentSchema);
+
 ```
 
 When documents are created, updated, or deleted, the graph updates automatically.
+You can create nodes and edges in one single bind
+
+bindModel(Schema, {
+  node: (n) => {
+    ...
+  },
+  edges: (e) => {
+    ...
+  }
+})
 
 ---
 
-### 3. Resync (one-time build or rebuild)
+### 3. Sync existing data (one-time build or rebuild)
 
 `kgBulkSync()` can replay your existing bindings to populate or rebuild the graph.
 It uses your `bindModel()` logic internally, so you don’t have to re-map nodes or edges manually.
+Use only when building the graph for the first time in a database that already contains data. 
 
 ```js
 const { kgBulkSync } = require('mongodb-kg');
@@ -198,6 +225,91 @@ You can visualize this data using D3.js, Cytoscape.js, or any other graph librar
 A minimal D3 example is included in `/public/js/graph.js` of the mflix example. 
 
 ---
+
+### 4A. Query Structural Distance (Unweighted)
+
+You can calculate the shortest path between any two nodes in your graph using:
+
+``` js 
+
+kgShortestPath(startId, endId, options).
+
+```
+This method measures the number of hops between two entities (ignoring edge weights).
+It’s useful for exploring degrees of connection — for example, how two users are related through the movies they’ve both commented on.
+
+Example: Find how closely two users are connected through shared movies
+
+```js
+
+
+const { distance, path } = await MflixComment.kgShortestPath(
+  'user_alice@example.com',
+  'user_bob@example.com',
+  { directed: false, maxDepth: 8 }
+);
+
+console.log(distance); // 3
+console.log(path);     // [ 'user_alice@example.com', 'movie_Inception', 'user_bob@example.com' ]
+
+```
+
+Interpretation:
+
+This means Alice and Bob are 3 steps apart in the comment network: Alice → Inception ← Bob.
+If they had both commented on the same movie, the distance would be 1.
+Longer distances indicate weaker or indirect relationships — for example, two users who share a connection through multiple other users and movies.
+
+Use this to analyze:
+* Communities of users clustered by shared interests.
+* Movie popularity (how many users it connects).
+* Degrees of separation between people or content.
+
+
+
+### 4B. Query Weighted Distance (Semantic)
+
+You can also calculate the lowest-cost path between two nodes using 
+
+``` js
+
+kgWeightedPath(startId, endId, options).
+
+```
+
+Weighted distance considers each edge’s numeric weight (e.g., comment sentiment, frequency, or affinity),
+so it measures strength or similarity rather than just closeness.
+
+Example: Compare two movies based on user overlap and comment sentiment
+
+``` js 
+
+const result = await MflixComment.kgWeightedPath(
+  'movie_Inception',
+  'movie_Interstellar',
+  {
+    directed: true,
+    weightField: 'weight',
+    defaultWeight: 1
+  }
+);
+
+console.log(result);
+// → { distance: 2.4, path: [ 'movie_Inception', 'user_42', 'movie_Interstellar' ] }
+
+```
+
+Interpretation:
+
+In this example, Inception and Interstellar are 2.4 units apart, meaning they share overlapping audiences with moderately strong engagement.
+A smaller number implies stronger similarity or tighter audience connection.
+
+Use this to:
+* Recommend similar movies based on shared users or sentiments.
+* Identify influential users who bridge communities.
+* Detect trend propagation — how opinions or interests travel across the graph.
+
+
 
 ## API Reference
 
@@ -270,27 +382,6 @@ Manually upserts nodes and edges.
 Use this only for legacy scripts.
 Future versions focus on the resync flow.
 
----
-
-### Typical Workflow
-
-```js
-const { NodeModel, EdgeModel } = createGraphModels({ /* config */ });
-
-kgInit({ nodesModel: NodeModel, edgesModel: EdgeModel });
-
-bindModel(MflixMovie, { node: ... });
-bindModel(MflixUser, { node: ... });
-bindModel(MflixComment, { node: ..., edges: ... });
-
-await kgBulkSync({
-  models: [
-    { model: MflixMovie },
-    { model: MflixUser },
-    { model: MflixComment }
-  ]
-});
-```
 
 ---
 
@@ -304,4 +395,5 @@ If this SDK helps your project, consider supporting its continued development:
 [Support via Stripe](https://buy.stripe.com/28E28q0TT6bo3jm5qC1RC00)  
 
 If you use this SDK in your project, a link back is appreciated.
+
 Pull requests and forks are welcome.

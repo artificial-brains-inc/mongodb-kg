@@ -34,6 +34,29 @@ function bindModel(modelOrSchema, config = {}) {
 
     // If a Model was passed, keep it; if a Schema was passed, Model stays null.
   const Model = modelOrSchema && typeof modelOrSchema.find === 'function' ? modelOrSchema : null;
+
+  
+    // === Attach distance helpers ============================================
+    if (!schema.statics.kgShortestPath) {
+      schema.statics.kgShortestPath = async function(aId, bId, opts = {}) {
+        const { edgesModel } = getCtx();
+        return _bfsShortestPath({ aId, bId, edgesModel, ...opts });
+      };
+    }
+    if (!schema.statics.kgWeightedPath) {
+      schema.statics.kgWeightedPath = async function(aId, bId, opts = {}) {
+        const { edgesModel } = getCtx();
+        return _dijkstraWeightedPath({ aId, bId, edgesModel, ...opts });
+      };
+    }
+    // If a concrete Model instance was passed in, mirror the statics on it too
+    if (Model) {
+      if (!Model.kgShortestPath) Model.kgShortestPath = schema.statics.kgShortestPath;
+      if (!Model.kgWeightedPath) Model.kgWeightedPath = schema.statics.kgWeightedPath;
+    }
+    // ========================================================================
+
+
   const {
     node: buildNode,
     edges: buildEdges,
@@ -251,6 +274,156 @@ function bindModel(modelOrSchema, config = {}) {
   schema.post('deleteMany', { document: false, query: true }, function() {
     return processStashedDocs(this, 'post:deleteMany');
   });
+
+
+  // === GRAPH HELPERS ===============================================
+  function _asStr(x) {
+    return (x && typeof x === 'object' && x.toString) ? x.toString() : String(x);
+  }
+
+  // Unweighted shortest path (BFS over levels, 1 batched query per level)
+  async function _bfsShortestPath({ aId, bId, directed = false, maxDepth = 20, edgesModel }) {
+    if (!edgesModel) throw new Error('kgInit() must be called: edgesModel missing');
+
+    const start = _asStr(aId);
+    const goal  = _asStr(bId);
+    if (start === goal) return { distance: 0, path: [start] };
+
+    const visited = new Set([start]);
+    const parent  = new Map();
+    let frontier  = [start];
+
+    for (let depth = 1; depth <= maxDepth && frontier.length; depth++) {
+      // Pull all edges incident to current frontier in one go
+      const qry = directed
+        ? { source: { $in: frontier } }
+        : { $or: [{ source: { $in: frontier } }, { target: { $in: frontier } }] };
+
+      const edges = await edgesModel
+        .find(qry, { projection: { source: 1, target: 1 } })
+        .toArray();
+
+      // Build adjacency for this layer
+      const adj = new Map(); // nodeStr -> neighborStr[]
+      for (const e of edges) {
+        const s = _asStr(e.source);
+        const t = _asStr(e.target);
+        if (directed) {
+          if (!adj.has(s)) adj.set(s, []);
+          adj.get(s).push(t);
+        } else {
+          if (!adj.has(s)) adj.set(s, []);
+          if (!adj.has(t)) adj.set(t, []);
+          adj.get(s).push(t);
+          adj.get(t).push(s);
+        }
+      }
+
+      const next = [];
+      for (const u of frontier) {
+        const nbrs = adj.get(u) || [];
+        for (const v of nbrs) {
+          if (visited.has(v)) continue;
+          visited.add(v);
+          parent.set(v, u);
+          if (v === goal) {
+            // Reconstruct
+            const path = [v];
+            while (path[path.length - 1] !== start) {
+              path.push(parent.get(path[path.length - 1]));
+            }
+            path.reverse();
+            return { distance: path.length - 1, path };
+          }
+          next.push(v);
+        }
+      }
+      frontier = next;
+    }
+
+    return { distance: Infinity, path: [] };
+  }
+
+  // Weighted shortest path (Dijkstra with batched per-node edge fetch)
+  async function _dijkstraWeightedPath({
+    aId,
+    bId,
+    directed = true,
+    weightField = 'weight',
+    defaultWeight = 1,
+    maxVisits = 1e6,
+    edgesModel
+  }) {
+    if (!edgesModel) throw new Error('kgInit() must be called: edgesModel missing');
+
+    const start = _asStr(aId);
+    const goal  = _asStr(bId);
+    if (start === goal) return { distance: 0, path: [start] };
+
+    // Tiny PQ (binary heap)
+    class PQ {
+      constructor() { this.h = []; }
+      push(x) { this.h.push(x); this._up(this.h.length - 1); }
+      pop() {
+        if (!this.h.length) return null;
+        const top = this.h[0];
+        const last = this.h.pop();
+        if (this.h.length) { this.h[0] = last; this._down(0); }
+        return top;
+      }
+      _up(i){ for(; i>0; ){ const p=(i-1)>>1; if (this.h[p].d <= this.h[i].d) break; [this.h[p],this.h[i]]=[this.h[i],this.h[p]]; i=p; } }
+      _down(i){ for(;;){ let l=i*2+1,r=l+1,m=i; if(l<this.h.length && this.h[l].d<this.h[m].d) m=l; if(r<this.h.length && this.h[r].d<this.h[m].d) m=r; if(m===i) break; [this.h[m],this.h[i]]=[this.h[i],this.h[m]]; i=m; } }
+      get length(){ return this.h.length; }
+    }
+
+    const dist   = new Map([[start, 0]]);
+    const parent = new Map();
+    const seen   = new Set();
+    const pq     = new PQ();
+    pq.push({ id: start, d: 0 });
+
+    let steps = 0;
+
+    while (pq.length) {
+      const { id: u, d } = pq.pop();
+      if (seen.has(u)) continue;
+      seen.add(u);
+
+      if (++steps > maxVisits) break;
+      if (u === goal) break;
+
+      // Only edges *from* u in directed graphs; all incident edges if undirected
+      const qry = directed ? { source: u } : { $or: [{ source: u }, { target: u }] };
+      const edges = await edgesModel
+        .find(qry, { projection: { source: 1, target: 1, [weightField]: 1 } })
+        .toArray();
+
+      for (const e of edges) {
+        const v = directed ? _asStr(e.target) : (e.source === u ? _asStr(e.target) : _asStr(e.source));
+        const w = (typeof e[weightField] === 'number') ? e[weightField] : defaultWeight;
+        const alt = d + (w >= 0 ? w : defaultWeight); // guard negatives
+
+        if (alt < (dist.get(v) ?? Infinity)) {
+          dist.set(v, alt);
+          parent.set(v, u);
+          pq.push({ id: v, d: alt });
+        }
+      }
+    }
+
+    if (!dist.has(goal)) return { distance: Infinity, path: [] };
+
+    // Reconstruct
+    const path = [goal];
+    while (path[path.length - 1] !== start) {
+      path.push(parent.get(path[path.length - 1]));
+    }
+    path.reverse();
+    return { distance: dist.get(goal), path };
+  }
+  // ======================== END OF GRAPH HELPERS ===================================================
+
+
 
   return modelOrSchema;
 }
