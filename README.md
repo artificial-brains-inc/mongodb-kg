@@ -388,8 +388,8 @@ Replays all your bindings across existing documents.
 | Option      | Type   | Default  | Description                           |
 | ----------- | ------ | -------- | ------------------------------------- |
 | models      | Array  | []       | Array of `{ model, query?, label? }`. |
-| mode        | String | `'save'` | Operation to trigger hooks.           |
-| batchSize   | Number | 0        | Number of documents to sync.          |
+| useBinding  | Boolean| false    | true required for initial build       |
+| batchSize   | Number | 1000     | Number of documents to sync.          |
 
 
 #### Classic upsert mode (deprecated)
