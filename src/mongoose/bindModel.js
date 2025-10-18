@@ -439,7 +439,7 @@ function bindModel(modelOrSchema, config = {}) {
      * @param {object} opts
      *   - mode: 'unweighted' | 'weighted' (default 'unweighted')
      *   - limit: number (default 5)
-     *   - includePath: boolean (default false; returns 3-node path [start, via, cand] in weighted mode)
+     *   - includePath: boolean (default false; returns [start, via, cand] in weighted mode)
      *   - relationship: string | string[] (optional)
      *   - direction: 'out' | 'in' | 'any' (default 'any')
      *   - targetType: string | string[] (optional)
@@ -482,14 +482,14 @@ function bindModel(modelOrSchema, config = {}) {
           const N = nodesModel.collection.name;
           const relMatchStage = rels.length ? [{ $match: { relationship: { $in: rels } } }] : [];
 
-          const w1 = { $ifNull: [`$${weightField}`, defaultWeight] };
-          const w2 = { $ifNull: [`$${weightField}`, defaultWeight] };
+          const w1Expr = { $ifNull: [`$${weightField}`, defaultWeight] };
+          const w2Expr = { $ifNull: [`$${weightField}`, defaultWeight] };
 
           // hop1 OUT/IN (ranked by weight, limited)
           const hop1Out = [
             { $match: { source: start } },
             ...relMatchStage,
-            { $addFields: { _w1: w1 } },
+            { $addFields: { _w1: w1Expr } },
             { $sort: { _w1: -1, source: 1 } },
             { $limit: fanout },
             { $project: { _id: 0, via: '$target', w1: '$_w1' } }
@@ -497,7 +497,7 @@ function bindModel(modelOrSchema, config = {}) {
           const hop1In = [
             { $match: { target: start } },
             ...relMatchStage,
-            { $addFields: { _w1: w1 } },
+            { $addFields: { _w1: w1Expr } },
             { $sort: { _w1: -1, target: 1 } },
             { $limit: fanout },
             { $project: { _id: 0, via: '$source', w1: '$_w1' } }
@@ -512,7 +512,7 @@ function bindModel(modelOrSchema, config = {}) {
                 pipeline: [
                   { $match: { $expr: { $eq: [dir === 'out' ? '$source' : '$target', '$$via'] } } },
                   ...relMatchStage,
-                  { $addFields: { _w2: w2 } },
+                  { $addFields: { _w2: w2Expr } },
                   { $sort: { _w2: -1 } },
                   { $limit: fanout },
                   { $project: { _id: 0, cand: dir === 'out' ? '$target' : '$source', w2: '$_w2' } }
@@ -526,6 +526,8 @@ function bindModel(modelOrSchema, config = {}) {
                 _id: 0,
                 cand: '$two.cand',
                 via: '$via',
+                w1: '$w1',
+                w2: '$two.w2',
                 score: { $add: ['$w1', '$two.w2'] }
               }
             }
@@ -543,10 +545,20 @@ function bindModel(modelOrSchema, config = {}) {
             ];
           }
 
+          // Keep the BEST (max score) path per candidate, while preserving w1/w2/via
           const pipeline = [
             ...base,
             { $match: { cand: { $ne: start } } },
-            { $group: { _id: '$cand', score: { $sum: '$score' }, via: { $first: '$via' } } },
+            { $sort: { score: -1 } }, // ensures $first below is the best path
+            {
+              $group: {
+                _id: '$cand',
+                score: { $first: '$score' },
+                via: { $first: '$via' },
+                w1: { $first: '$w1' },
+                w2: { $first: '$w2' }
+              }
+            },
             { $sort: { score: -1 } },
           ];
 
@@ -578,7 +590,7 @@ function bindModel(modelOrSchema, config = {}) {
 
           pipeline.push(
             { $limit: Math.max(1, limit) },
-            { $project: { _id: 0, id: '$_id', score: 1, via: 1 } }
+            { $project: { _id: 0, id: '$_id', score: 1, via: 1, w1: 1, w2: 1 } }
           );
 
           const rows = await edgesModel.aggregate(pipeline).allowDiskUse(true).exec();
@@ -601,8 +613,10 @@ function bindModel(modelOrSchema, config = {}) {
               id: r.id,
               type: d?.type,
               title: titleOf(d),
-              score: r.score,
-              distance: 2,                      // explicit 2 hops
+              score: r.score,    // w1 + w2
+              w1: r.w1,
+              w2: r.w2,
+              distance: 2
             };
             if (includePath && r.via) out.path = [start, r.via, r.id];
             return out;
@@ -677,17 +691,14 @@ function bindModel(modelOrSchema, config = {}) {
         // ===== dispatch =====
         if (mode === 'weighted') {
           const rows = await weighted2Hop();
-          // If the strict weighted path returns nothing (e.g., all weights filtered out),
-          // fall back to unweighted capped so the SDK still returns something.
-          if (!rows.length) {
-            return await unweighted2HopCapped();
-          }
+          if (!rows.length) return await unweighted2HopCapped();
           return rows;
         } else {
           return await unweighted2HopCapped();
         }
       };
     }
+
 
   if (Model && !Model.kgRecommend) {
     Model.kgRecommend = schema.statics.kgRecommend;
