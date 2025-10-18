@@ -193,11 +193,10 @@ await kgBulkSync({
   models: [
     { model: MflixMovie },
     { model: MflixUser },
-    { model: MflixComment }
+    { model: MflixComment },
   ],
-  mode: 'save',   // 'save' or 'findOneAndUpdate'
-  concurrency: 8, // number of parallel docs processed
-  maxPerModel: 0  // 0 = process all
+  useBindings: true,
+  batchSize: 2000,
 });
 ```
 
@@ -390,8 +389,8 @@ Replays all your bindings across existing documents.
 | ----------- | ------ | -------- | ------------------------------------- |
 | models      | Array  | []       | Array of `{ model, query?, label? }`. |
 | mode        | String | `'save'` | Operation to trigger hooks.           |
-| concurrency | Number | 8        | Parallelism for processing documents. |
-| maxPerModel | Number | 0        | 0 = all documents.                    |
+| batchSize   | Number | 0        | Number of documents to sync.          |
+
 
 #### Classic upsert mode (deprecated)
 

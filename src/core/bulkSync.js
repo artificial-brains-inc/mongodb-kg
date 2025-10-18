@@ -1,38 +1,22 @@
-// src/bulkSync.js  (replace the whole file with this)
+// src/bulkSync.js
 const { getCtx } = require('./init');
 
 /**
  * kgBulkSync
  *
- * Backwards compatible:
- *  - If you pass desiredNodes/desiredEdges: performs classic bulk upserts.
- *  - If you pass models: re-triggers middleware on existing docs to sync the graph.
- *
- * @param {Object} opts
- * @param {Array<Object>} [opts.desiredNodes=[]]   Classic bulk: nodes to upsert (must include stable `id`)
- * @param {Array<Object>} [opts.desiredEdges=[]]   Classic bulk: edges to upsert (must include stable `id`)
- * @param {boolean|{nodes?:boolean,edges?:boolean}} [opts.keepExtra={edges:true}]
- *        - For classic bulk only. When edges=false, we prune edges whose `source`
- *          is one of the provided nodes and whose id is NOT in desiredEdges.
- *          Default is edges:true (NO PRUNE) for safety.
- *
- * @param {Array<{model:any, query?:object, label?:string}>} [opts.models=[]]
- *        - NEW: If provided, we "touch" docs in these models to fire your bindModel hooks.
- * @param {'save'|'findOneAndUpdate'} [opts.mode='save']   // resync mode
- * @param {number} [opts.concurrency=8]                    // resync: parallel saves
- * @param {number} [opts.maxPerModel=0]                    // resync: 0 means "all"
- *
- * @returns {Promise<Object>} summary (classic: counts; resync: per-model processed)
+ * Dual-purpose:
+ *  1. Classic bulk upsert (desiredNodes / desiredEdges)
+ *  2. Fast resync using model bindings (useBindings: true)
  */
 async function kgBulkSync(opts = {}) {
   const {
     desiredNodes = [],
     desiredEdges = [],
-    keepExtra = { edges: true },       // default: DO NOT PRUNE
-    models = [],                       // NEW resync path
-    mode = 'save',
-    concurrency = 8,
+    keepExtra = { edges: true }, // default: DO NOT PRUNE
+    models = [],
     maxPerModel = 0,
+    useBindings = false,
+    batchSize = 1000,
   } = opts;
 
   const { nodesModel, edgesModel } = getCtx();
@@ -40,100 +24,95 @@ async function kgBulkSync(opts = {}) {
     throw new Error('kgInit() must be called before kgBulkSync()');
   }
 
-  // -----------------------------
-  // Branch 1: RESYNC via models[]
-  // -----------------------------
-  if (Array.isArray(models) && models.length > 0) {
-    const results = {};
-    for (const item of models) {
-      if (!item || !item.model || typeof item.model.find !== 'function') {
-        throw new Error('kgBulkSync(models): each entry must be { model: MongooseModel, query?, label? }');
-      }
-      const Model = item.model;
-      const query = item.query || {};
-      const label = item.label || Model.modelName || 'Model';
+  // ------------------------------------------------------------------
+  // FAST PATH: Resync using bindings (no touching source collections)
+  // ------------------------------------------------------------------
+  if (useBindings && Array.isArray(models) && models.length > 0) {
+    let totalNodes = 0;
+    let totalEdges = 0;
 
+    for (const { model, query = {}, label = (model && model.modelName) || 'Model' } of models) {
+      if (!model?.find) {
+        throw new Error('kgBulkSync(useBindings): each entry must be { model }');
+      }
+
+      const binding = model.__kgBinding || model?.schema?.statics?.__kgBinding;
+      if (!binding) {
+        console.warn(`[kgBulkSync] No __kgBinding found for ${label}; skipping`);
+        continue;
+      }
+
+      const { buildNode, buildEdges } = binding;
+      const cursor = model.find(query).lean().cursor();
+
+      let nodeBuf = [];
+      let edgeBuf = [];
       let processed = 0;
 
-      if (mode === 'save') {
-        // Use full documents so post('save') middleware fires
-        const cursor = Model.find(query).lean(false).cursor();
-        const inFlight = new Set();
+      async function flush() {
+        if (!nodeBuf.length && !edgeBuf.length) return;
+        const nops = nodeBuf.map(n => ({
+          updateOne: { filter: { id: n.id }, update: { $set: n }, upsert: true },
+        }));
+        const eops = edgeBuf.map(e => ({
+          updateOne: { filter: { id: e.id }, update: { $set: e }, upsert: true },
+        }));
 
-        for await (const doc of cursor) {
-          // touch a field to ensure modified state (some hooks check modifiedPaths)
-          doc.set('__kg_touch', new Date());
+        if (nops.length) await nodesModel.bulkWrite(nops, { ordered: false });
+        if (eops.length) await edgesModel.bulkWrite(eops, { ordered: false });
 
-          const p = doc.save().then(() => {
-            processed++;
-            inFlight.delete(p);
-          }).catch((err) => {
-            inFlight.delete(p);
-            // Swallow per-doc errors but continue; you can log if you want:
-            // console.error(`[kgBulkSync][${label}] save failed`, err);
-          });
+        totalNodes += nops.length;
+        totalEdges += eops.length;
 
-          inFlight.add(p);
-          if (inFlight.size >= concurrency) {
-            await Promise.race(inFlight);
-          }
-          if (maxPerModel && processed >= maxPerModel) break;
-        }
-        await Promise.allSettled([...inFlight]);
-      } else if (mode === 'findOneAndUpdate') {
-        // Faster, if you have post('findOneAndUpdate') wiring too
-        const ids = [];
-        for await (const d of Model.find(query).select({ _id: 1 }).lean().cursor()) {
-          ids.push(d._id);
-          if (maxPerModel && processed + ids.length >= maxPerModel) break;
-          if (ids.length >= 500) {
-            await Promise.all(ids.map(_id =>
-              Model.findOneAndUpdate({ _id }, { $set: { __kg_touch: new Date() } }, { new: true })
-            ));
-            processed += ids.length;
-            ids.length = 0;
-          }
-        }
-        if (ids.length) {
-          await Promise.all(ids.map(_id =>
-            Model.findOneAndUpdate({ _id }, { $set: { __kg_touch: new Date() } }, { new: true })
-          ));
-          processed += ids.length;
-        }
-      } else {
-        throw new Error(`kgBulkSync(models): unsupported mode "${mode}"`);
+        nodeBuf = [];
+        edgeBuf = [];
       }
 
-      results[label] = processed;
+      for await (const doc of cursor) {
+        if (typeof buildNode === 'function') {
+          const n = await Promise.resolve(buildNode(doc));
+          if (n?.id) nodeBuf.push(n);
+        }
+        if (typeof buildEdges === 'function') {
+          const es = await Promise.resolve(buildEdges(doc));
+          if (Array.isArray(es) && es.length) edgeBuf.push(...es.filter(Boolean));
+        }
+
+        processed++;
+        if (maxPerModel && processed >= maxPerModel) break;
+        if (nodeBuf.length + edgeBuf.length >= batchSize) {
+          await flush();
+        }
+      }
+
+      await flush();
+      // console.log(`[kgBulkSync][bindings] ${label} processed=${processed}`);
     }
-    return { mode: 'resync', processed: results };
+
+    return { mode: 'bindings', upsertedNodes: totalNodes, upsertedEdges: totalEdges };
   }
 
-  // --------------------------------------------
-  // Branch 2: CLASSIC BULK UPSERT (back-compat)
-  // --------------------------------------------
+  // ------------------------------------------------------------------
+  // CLASSIC BULK UPSERT (backward compatible)
+  // ------------------------------------------------------------------
   const nodeOps = desiredNodes.map(node => ({
     updateOne: {
       filter: { id: node.id },
       update: { $set: node },
-      upsert: true
-    }
+      upsert: true,
+    },
   }));
 
   const edgeOps = desiredEdges.map(edge => ({
     updateOne: {
       filter: { id: edge.id },
       update: { $set: edge },
-      upsert: true
-    }
+      upsert: true,
+    },
   }));
 
-  if (nodeOps.length) {
-    await nodesModel.bulkWrite(nodeOps);
-  }
-  if (edgeOps.length) {
-    await edgesModel.bulkWrite(edgeOps);
-  }
+  if (nodeOps.length) await nodesModel.bulkWrite(nodeOps);
+  if (edgeOps.length) await edgesModel.bulkWrite(edgeOps);
 
   // Optional pruning (NO org_id dependency)
   const edgesKeepExtra = typeof keepExtra === 'object' ? !!keepExtra.edges : !!keepExtra;
@@ -142,14 +121,14 @@ async function kgBulkSync(opts = {}) {
     const desiredEdgeIds = new Set(desiredEdges.map(e => e.id));
     await edgesModel.deleteMany({
       source: { $in: controlledSources },
-      id: { $nin: Array.from(desiredEdgeIds) }
+      id: { $nin: Array.from(desiredEdgeIds) },
     });
   }
 
   return {
     mode: 'bulk',
     upsertedNodes: desiredNodes.length,
-    upsertedEdges: desiredEdges.length
+    upsertedEdges: desiredEdges.length,
   };
 }
 
