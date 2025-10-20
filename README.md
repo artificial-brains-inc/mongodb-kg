@@ -14,7 +14,7 @@ The SDK wires itself into your Mongoose models through middleware so the graph s
 A working demo using this SDK is available here:  
 [sdk-kg-x-mongo-mFlix Demo](https://github.com/artificial-brains-inc/mongodb-kg-sdk-mFlix)
 
-The demo shows how to integrate **@artificialbrains/kgraph-x-mongo** into a real Express + Mongoose app.
+The demo shows how to integrate **@artificialbrain/kgraph-x-mongo** into a real Express + Mongoose app.
 
 ---
 
@@ -33,7 +33,7 @@ The demo shows how to integrate **@artificialbrains/kgraph-x-mongo** into a real
 
 ```bash
 npm install mongoose
-npm install @artificialbrains/kgraph-x-mongo
+npm install @artificialbrain/kgraph-x-mongo
 ```
 
 Mongoose is a peer dependency; bring your own compatible version.
@@ -51,7 +51,7 @@ Tell the SDK which Mongoose models will store your nodes and edges.
 
 ```js
 const mongoose = require('mongoose');
-const { kgInit } = require('@artificialbrains/kgraph-x-mongo');
+const { kgInit } = require('@artificialbrain/kgraph-x-mongo');
 
 const NodesModel = require('./models/nodes');
 const EdgesModel = require('./models/edges');
@@ -69,7 +69,7 @@ kgInit({
 You can automatically generate `NodeModel` and `EdgeModel` using `createGraphModels()`. Be aware to index customFields as required to make it efficient (it will be indexed as properties.field). 
 
 ```js
-const { createGraphModels, kgInit } = require('@artificialbrains/kgraph-x-mongo');
+const { createGraphModels, kgInit } = require('@artificialbrain/kgraph-x-mongo');
 
 const nodeTypes = ['user', 'movie', 'comment', 'theater'];
 const relationships = ['commented_on', 'screened_at'];
@@ -114,7 +114,7 @@ In your model definition (e.g. movies)
 ```js
 
 
-const { bindModel } = require('@artificialbrains/kgraph-x-mongo');
+const { bindModel } = require('@artificialbrain/kgraph-x-mongo');
 
 
 const MovieSchema = new Schema({ /* your schema */});
@@ -143,7 +143,7 @@ Example 2: Edges in your comments model
 
 const mongoose = require('mongoose');
 const { Schema } = mongoose;
-const { bindModel } = require('@artificialbrains/kgraph-x-mongo');
+const { bindModel } = require('@artificialbrain/kgraph-x-mongo');
 
 
 const CommentSchema = new Schema({
@@ -193,7 +193,7 @@ It uses your `bindModel()` logic internally, so you don’t have to re-map nodes
 Use only when building the graph for the first time in a database that already contains data. 
 
 ```js
-const { kgBulkSync } = require('@artificialbrains/kgraph-x-mongo');
+const { kgBulkSync } = require('@artificialbrain/kgraph-x-mongo');
 
 await kgBulkSync({
   models: [
