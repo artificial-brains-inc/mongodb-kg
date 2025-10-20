@@ -2,7 +2,7 @@
 > Feedback, issues, and pull requests are welcome.
 
 
-# Knowledge Graph SDK build to run on top of MongoDB (by Artificial Brains)
+# Knowledge Graph SDK x MongoDB (by Artificial Brains)
 
 A generic Knowledge Graph SDK for Mongoose. It lets you turn any MongoDB collection into a knowledge graph where documents become nodes and relationships become edges.
 The SDK wires itself into your Mongoose models through middleware so the graph stays in sync as your data changes.
