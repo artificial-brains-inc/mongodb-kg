@@ -2,7 +2,7 @@
 > Feedback, issues, and pull requests are welcome.
 
 
-# MongoDB KG
+# Knowledge Graph SDK build to run on top of MongoDB (by Artificial Brains)
 
 A generic Knowledge Graph SDK for Mongoose. It lets you turn any MongoDB collection into a knowledge graph where documents become nodes and relationships become edges.
 The SDK wires itself into your Mongoose models through middleware so the graph stays in sync as your data changes.
@@ -12,7 +12,7 @@ The SDK wires itself into your Mongoose models through middleware so the graph s
 ## Demo
 
 A working demo using this SDK is available here:  
-[mongodb-kg-sdk-mFlix Demo](https://github.com/artificial-brains-inc/mongodb-kg-sdk-mFlix)
+[kg-x-mongo-sdk-mFlix Demo](https://github.com/artificial-brains-inc/mongodb-kg-sdk-mFlix)
 
 The demo shows how to integrate **mongodb-kg** into a real Express + Mongoose app.
 
@@ -33,7 +33,7 @@ The demo shows how to integrate **mongodb-kg** into a real Express + Mongoose ap
 
 ```bash
 npm install mongoose
-npm install mongodb-kg
+npm install kg-x-mongo
 ```
 
 Mongoose is a peer dependency; bring your own compatible version.
@@ -51,7 +51,7 @@ Tell the SDK which Mongoose models will store your nodes and edges.
 
 ```js
 const mongoose = require('mongoose');
-const { kgInit } = require('mongodb-kg');
+const { kgInit } = require('kg-x-mongo');
 
 const NodesModel = require('./models/nodes');
 const EdgesModel = require('./models/edges');
@@ -114,7 +114,7 @@ In your model definition (e.g. movies)
 ```js
 
 
-const { bindModel } = require('mongodb-kg');
+const { bindModel } = require('kg-x-mongo');
 
 
 const MovieSchema = new Schema({ /* your schema */});
@@ -143,7 +143,7 @@ Example 2: Edges in your comments model
 
 const mongoose = require('mongoose');
 const { Schema } = mongoose;
-const { bindModel } = require('mongodb-kg');
+const { bindModel } = require('kg-x-mongo');
 
 
 const CommentSchema = new Schema({
@@ -193,7 +193,7 @@ It uses your `bindModel()` logic internally, so you don’t have to re-map nodes
 Use only when building the graph for the first time in a database that already contains data. 
 
 ```js
-const { kgBulkSync } = require('mongodb-kg');
+const { kgBulkSync } = require('kg-x-mongo');
 
 await kgBulkSync({
   models: [
