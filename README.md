@@ -12,9 +12,9 @@ The SDK wires itself into your Mongoose models through middleware so the graph s
 ## Demo
 
 A working demo using this SDK is available here:  
-[kg-x-mongo-sdk-mFlix Demo](https://github.com/artificial-brains-inc/mongodb-kg-sdk-mFlix)
+[mongodb-sdk-mFlix Demo](https://github.com/artificial-brains-inc/mongodb-kg-sdk-mFlix)
 
-The demo shows how to integrate **mongodb-kg** into a real Express + Mongoose app.
+The demo shows how to integrate **@artificialbrains/mongo-kg** into a real Express + Mongoose app.
 
 ---
 
